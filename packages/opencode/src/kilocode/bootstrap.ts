@@ -21,6 +21,8 @@ import { MemoryEvents } from "@/kilocode/memory/events"
 import { installMemoryRuntime } from "@/kilocode/memory/runtime"
 import { KiloToolRegistry } from "@/kilocode/tool/registry"
 import { Wakeup } from "@/kilocode/wakeup"
+import { SwarmRecovery } from "@/kilocode/swarm/recovery" // kilocode_change
+import { Database } from "@opencode-ai/core/database/database" // kilocode_change
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { KilocodeWatcher } from "@/kilocode/watcher"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder" // kilocode_change
@@ -70,6 +72,14 @@ export namespace KilocodeBootstrap {
             ),
           )
         }
+        // kilocode_change start - M2 non-executing swarm reconciliation (never resumes work)
+        yield* SwarmRecovery.reconcile().pipe(
+          Effect.provide(Database.layerFromPath(Database.path())),
+          Effect.catchCause((cause) =>
+            Effect.sync(() => log.warn("swarm reconcile failed", { err: Cause.squash(cause) })),
+          ),
+        )
+        // kilocode_change end
         // Session export bootstrap.
         yield* Effect.gen(function* () {
           if (!SessionExport.enabled) return

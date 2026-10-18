@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "8e919778-bf29-4e1b-a106-88bc9d8b8b21",
+  "id": "f880a31c-fdf4-44c3-8a85-0e06b7ad302b",
   "prevIds": [
-    "38a74186-5907-4662-9e14-e059300a8b4e"
+    "8e919778-bf29-4e1b-a106-88bc9d8b8b21"
   ],
   "ddl": [
     {
@@ -44,6 +44,26 @@
     },
     {
       "name": "kilo_board",
+      "entityType": "tables"
+    },
+    {
+      "name": "kilo_swarm_claim",
+      "entityType": "tables"
+    },
+    {
+      "name": "kilo_swarm_idempotency",
+      "entityType": "tables"
+    },
+    {
+      "name": "kilo_swarm",
+      "entityType": "tables"
+    },
+    {
+      "name": "kilo_swarm_task",
+      "entityType": "tables"
+    },
+    {
+      "name": "kilo_swarm_task_transition",
       "entityType": "tables"
     },
     {
@@ -749,6 +769,406 @@
       "name": "time_updated",
       "entityType": "columns",
       "table": "kilo_board"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "lease_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fence",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "scope",
+      "entityType": "columns",
+      "table": "kilo_swarm_idempotency"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key",
+      "entityType": "columns",
+      "table": "kilo_swarm_idempotency"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "result",
+      "entityType": "columns",
+      "table": "kilo_swarm_idempotency"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "kilo_swarm_idempotency"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "swarm_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "fence",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "cancel_requested",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "parent_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "attempts",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "swarm_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "seq",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "from_state",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "to_state",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "version_before",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "version_after",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fence",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "actor",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "corr_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "idem_key",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "kilo_swarm_task_transition"
     },
     {
       "type": "text",
@@ -1767,6 +2187,51 @@
     },
     {
       "columns": [
+        "task_id"
+      ],
+      "tableTo": "kilo_swarm_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_kilo_swarm_claim_task_id_kilo_swarm_task_id_fk",
+      "entityType": "fks",
+      "table": "kilo_swarm_claim"
+    },
+    {
+      "columns": [
+        "swarm_id"
+      ],
+      "tableTo": "kilo_swarm",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_kilo_swarm_task_swarm_id_kilo_swarm_id_fk",
+      "entityType": "fks",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "tableTo": "kilo_swarm_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_kilo_swarm_task_transition_task_id_kilo_swarm_task_id_fk",
+      "entityType": "fks",
+      "table": "kilo_swarm_task_transition"
+    },
+    {
+      "columns": [
         "project_id"
       ],
       "tableTo": "project",
@@ -2028,6 +2493,42 @@
     },
     {
       "columns": [
+        "task_id"
+      ],
+      "nameExplicit": false,
+      "name": "kilo_swarm_claim_pk",
+      "table": "kilo_swarm_claim",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "kilo_swarm_pk",
+      "table": "kilo_swarm",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "kilo_swarm_task_pk",
+      "table": "kilo_swarm_task",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "kilo_swarm_task_transition_pk",
+      "table": "kilo_swarm_task_transition",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -2164,6 +2665,60 @@
       "name": "kilo_board_message_board_seq_idx",
       "entityType": "indexes",
       "table": "kilo_board_message"
+    },
+    {
+      "columns": [
+        {
+          "value": "scope",
+          "isExpression": false
+        },
+        {
+          "value": "key",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "kilo_swarm_idempotency_scope_key_idx",
+      "entityType": "indexes",
+      "table": "kilo_swarm_idempotency"
+    },
+    {
+      "columns": [
+        {
+          "value": "swarm_id",
+          "isExpression": false
+        },
+        {
+          "value": "state",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "kilo_swarm_task_swarm_state_idx",
+      "entityType": "indexes",
+      "table": "kilo_swarm_task"
+    },
+    {
+      "columns": [
+        {
+          "value": "task_id",
+          "isExpression": false
+        },
+        {
+          "value": "seq",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "kilo_swarm_task_transition_task_seq_idx",
+      "entityType": "indexes",
+      "table": "kilo_swarm_task_transition"
     },
     {
       "columns": [
@@ -2504,4 +3059,3 @@
   ],
   "renames": []
 }
-
