@@ -119,7 +119,9 @@ export namespace SwarmClaims {
     }))
 
     return { ownerId: input.ownerId, leaseId, fence: newFence, expiresAt, token }
-  })  export const renew = Effect.fn("SwarmClaims.renew")(function* (input: {
+  })
+
+  export const renew = Effect.fn("SwarmClaims.renew")(function* (input: {
     taskId: string
     leaseId: string
     fence: number
@@ -148,7 +150,9 @@ export namespace SwarmClaims {
       }),
       { behavior: "immediate" },
     )
-  })  export const release = Effect.fn("SwarmClaims.release")(function* (input: {
+  })
+
+  export const release = Effect.fn("SwarmClaims.release")(function* (input: {
     taskId: string
     leaseId: string
     fence: number
@@ -195,7 +199,9 @@ export namespace SwarmClaims {
       return Effect.die(defect)
     }))
     return { released: true }
-  })  export const assertOwnership = Effect.fn("SwarmClaims.assertOwnership")(function* (input: {
+  })
+
+  export const assertOwnership = Effect.fn("SwarmClaims.assertOwnership")(function* (input: {
     taskId: string
     leaseId: string
     fence: number
