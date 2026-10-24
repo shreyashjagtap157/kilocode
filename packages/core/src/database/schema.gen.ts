@@ -146,6 +146,7 @@ export default {
           \`id\` text PRIMARY KEY,
           \`state\` text NOT NULL,
           \`version\` integer DEFAULT 0 NOT NULL,
+          \`max_workers\` integer DEFAULT 4 NOT NULL,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL
         );
@@ -163,6 +164,21 @@ export default {
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL,
           CONSTRAINT \`fk_kilo_swarm_task_swarm_id_kilo_swarm_id_fk\` FOREIGN KEY (\`swarm_id\`) REFERENCES \`kilo_swarm\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`kilo_swarm_worker_reservation\` (
+          \`task_id\` text PRIMARY KEY,
+          \`swarm_id\` text NOT NULL,
+          \`owner_id\` text NOT NULL,
+          \`lease_id\` text NOT NULL,
+          \`fence\` integer NOT NULL,
+          \`expires_at\` integer NOT NULL,
+          \`state\` text NOT NULL,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_kilo_swarm_worker_reservation_task_id_kilo_swarm_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`kilo_swarm_task\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_kilo_swarm_worker_reservation_swarm_id_kilo_swarm_id_fk\` FOREIGN KEY (\`swarm_id\`) REFERENCES \`kilo_swarm\`(\`id\`) ON DELETE CASCADE
         );
       `)
       yield* tx.run(`
@@ -344,10 +360,13 @@ export default {
         `CREATE UNIQUE INDEX \`kilo_swarm_idempotency_scope_key_idx\` ON \`kilo_swarm_idempotency\` (\`scope\`,\`key\`);`,
       )
       yield* tx.run(
-        `CREATE UNIQUE INDEX \`kilo_swarm_task_swarm_state_idx\` ON \`kilo_swarm_task\` (\`swarm_id\`,\`state\`);`,
+        `CREATE INDEX \`kilo_swarm_task_swarm_state_idx\` ON \`kilo_swarm_task\` (\`swarm_id\`,\`state\`);`,
       )
       yield* tx.run(
         `CREATE UNIQUE INDEX \`kilo_swarm_task_transition_task_seq_idx\` ON \`kilo_swarm_task_transition\` (\`task_id\`,\`seq\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`kilo_swarm_worker_reservation_active_idx\` ON \`kilo_swarm_worker_reservation\` (\`swarm_id\`,\`state\`,\`expires_at\`);`,
       )
       yield* tx.run(
         `CREATE UNIQUE INDEX \`permission_project_action_resource_idx\` ON \`permission\` (\`project_id\`,\`action\`,\`resource\`);`,
