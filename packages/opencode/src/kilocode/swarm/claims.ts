@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { randomUUID } from "node:crypto"
 import { Database } from "@opencode-ai/core/database/database"
 import { sql } from "drizzle-orm"
+import { TerminalStates } from "./schema"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SwarmTaskClaimed, SwarmTaskReleased } from "./events"
 import { SwarmState } from "./state"
@@ -37,6 +38,12 @@ export namespace SwarmClaims {
       return yield* Effect.fail(new LeaseExpired({ message: `leaseMs must be a positive safe integer for ${input.taskId}` }))
     }
     const task = yield* SwarmState.getTask(input.taskId)
+    if (task.cancel_requested !== 0) {
+      return yield* Effect.fail(new ClaimConflict({ message: `task ${input.taskId} has a cancellation request` }))
+    }
+    if (TerminalStates.includes(task.state as any)) {
+      return yield* Effect.fail(new ClaimConflict({ message: `task ${input.taskId} is terminal (${task.state})` }))
+    }
     const now = Date.now()
     const expiresAt = now + input.leaseMs
     if (!Number.isSafeInteger(expiresAt)) {
@@ -66,10 +73,10 @@ export namespace SwarmClaims {
       {
         commit: () => Effect.gen(function* () {
           const nowInTransaction = Date.now()
-          const currentTask = yield* db.get<{ swarm_id: string; state: string; version: number; fence: number }>(sql`
-            SELECT swarm_id, state, version, fence FROM kilo_swarm_task WHERE id = ${input.taskId}
+          const currentTask = yield* db.get<{ swarm_id: string; state: string; version: number; fence: number; cancel_requested: number }>(sql`
+            SELECT swarm_id, state, version, fence, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
           `)
-          if (!currentTask || currentTask.swarm_id !== task.swarm_id || currentTask.state !== task.state || currentTask.version !== task.version || currentTask.fence !== task.fence) {
+          if (!currentTask || currentTask.swarm_id !== task.swarm_id || currentTask.state !== task.state || currentTask.version !== task.version || currentTask.fence !== task.fence || currentTask.cancel_requested !== task.cancel_requested || currentTask.cancel_requested !== 0 || TerminalStates.includes(currentTask.state as any)) {
             return yield* Effect.die(new ClaimConflict({ message: `task ${input.taskId} changed before claim commit; retry` }))
           }
 
