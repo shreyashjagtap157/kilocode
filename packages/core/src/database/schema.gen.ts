@@ -198,7 +198,7 @@ export default {
           CONSTRAINT \`fk_kilo_swarm_worker_reservation_task_id_kilo_swarm_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`kilo_swarm_task\`(\`id\`) ON DELETE CASCADE,
           CONSTRAINT \`fk_kilo_swarm_worker_reservation_swarm_id_kilo_swarm_id_fk\` FOREIGN KEY (\`swarm_id\`) REFERENCES \`kilo_swarm\`(\`id\`) ON DELETE CASCADE
         );
-      
+      `)
       yield* tx.run(`
         CREATE TABLE \`permission\` (
           \`id\` text PRIMARY KEY,
