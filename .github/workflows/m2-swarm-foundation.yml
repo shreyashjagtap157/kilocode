@@ -44,9 +44,11 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
-      - name: Validate migration snapshot, generated schema, and registry
+      - name: Regenerate schema and display exact drift
         working-directory: packages/core
-        run: bun script/migration.ts --check
+        run: |
+          bun script/migration.ts
+          git --no-pager diff -- src/database/schema.gen.ts
 
       - name: Test durable events and migration upgrades
         working-directory: packages/core
@@ -57,3 +59,6 @@ jobs:
         run: bun test test/kilocode/swarm --timeout 60000
         env:
           KILO_EXPERIMENTAL_DISABLE_FILEWATCHER: 'true'
+
+      - name: Verify generated schema is committed
+        run: git diff --exit-code -- packages/core/src/database/schema.gen.ts
