@@ -275,7 +275,7 @@ describe("swarm concurrency (M2)", () => {
   test("cross-process worker admission respects configured capacity", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
-    const setup = await use(
+    const setup = (await use(
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
         const taskIds = yield* Effect.forEach(Array.from({ length: 8 }, () => 0), () =>
@@ -284,7 +284,7 @@ describe("swarm concurrency (M2)", () => {
         return { swarmId, taskIds }
       }),
       file,
-    )
+    )) as { swarmId: string; taskIds: string[] }
 
     const workerPath = path.join(import.meta.dir, "..", "fixture/swarm-admission-worker.ts")
     const children = setup.taskIds.map((taskId, i) =>
@@ -324,14 +324,14 @@ describe("swarm concurrency (M2)", () => {
   test("cross-process claim race advances a task fence exactly once", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
-    const setup = await use(
+    const setup = (await use(
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 4 })
         const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
         return { swarmId, taskId }
       }),
       file,
-    )
+    )) as { swarmId: string; taskId: string }
     const workerPath = path.join(import.meta.dir, "..", "fixture/swarm-admission-worker.ts")
     const children = Array.from({ length: 4 }, (_, i) =>
       Bun.spawn([process.execPath, workerPath, file, setup.taskId, `same-task-${i}`], { stdout: "pipe", stderr: "pipe" }),
