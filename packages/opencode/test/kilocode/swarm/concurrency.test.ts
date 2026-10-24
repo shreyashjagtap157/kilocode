@@ -166,4 +166,109 @@ describe("swarm concurrency (M2)", () => {
       file,
     )
   })
+  test("multiple tasks may share a state within one swarm", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const tasks = yield* Effect.forEach([1, 2, 3], () => SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any }))
+        expect(new Set(tasks).size).toBe(3)
+        const { db } = yield* Database.Service
+        const rows = yield* db.all<{ c: number }>(sql`SELECT COUNT(*) AS c FROM kilo_swarm_task WHERE swarm_id = ${swarmId} AND state = 'queued'`)
+        expect(rows[0].c).toBe(3)
+      }),
+      file,
+    )
+  })
+
+  test("worker capacity atomically admits no more than configured slots", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
+        const taskIds = yield* Effect.forEach(Array.from({ length: 12 }, () => 0), () => SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any }))
+        const results = yield* Effect.all(taskIds.map((taskId, i) => Effect.exit(SwarmClaims.claim({ taskId, ownerId: `worker-${i}`, leaseMs: 60000, actor: "act_test", corrId: `cor-${i}` as any }))), { concurrency: "unbounded" })
+        expect(results.filter((result) => result._tag === "Success").length).toBe(2)
+        expect(results.filter((result) => result._tag === "Failure").length).toBe(10)
+        const { db } = yield* Database.Service
+        const reservations = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation WHERE swarm_id = ${swarmId} AND state = 'active' AND expires_at > ${Date.now()}`)
+        const claims = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_claim c JOIN kilo_swarm_task t ON t.id = c.task_id WHERE t.swarm_id = ${swarmId} AND c.state = 'active' AND c.expires_at > ${Date.now()}`)
+        expect(reservations?.count).toBe(2)
+        expect(claims?.count).toBe(2)
+      }),
+      file,
+    )
+  })
+
+  test("capacity exhaustion rolls back claim fence and durable event", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 0 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const result = yield* Effect.exit(SwarmClaims.claim({ taskId, ownerId: "worker-0", leaseMs: 60000, actor: "act_test", corrId: "cor_test" as any }))
+        expect(result._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.fence).toBe(0)
+        const { db } = yield* Database.Service
+        const claimCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_claim WHERE task_id = ${taskId}`)
+        const reservationCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation WHERE task_id = ${taskId}`)
+        const eventCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.claimed%'`)
+        expect(claimCount?.count).toBe(0)
+        expect(reservationCount?.count).toBe(0)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
+  test("releasing a worker frees its reservation for another task", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const [task1, task2] = yield* Effect.forEach([1, 2], () => SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any }))
+        const first = yield* SwarmClaims.claim({ taskId: task1, ownerId: "worker-1", leaseMs: 60000, actor: "act_test", corrId: "cor_test" as any })
+        yield* SwarmClaims.release({ taskId: task1, leaseId: first.leaseId, fence: first.fence, corrId: "cor_test" as any })
+        const second = yield* SwarmClaims.claim({ taskId: task2, ownerId: "worker-2", leaseMs: 60000, actor: "act_test", corrId: "cor_test" as any })
+        const { db } = yield* Database.Service
+        const released = yield* db.get<{ state: string }>(sql`SELECT state FROM kilo_swarm_worker_reservation WHERE task_id = ${task1}`)
+        const active = yield* db.get<{ state: string; lease_id: string }>(sql`SELECT state, lease_id FROM kilo_swarm_worker_reservation WHERE task_id = ${task2}`)
+        expect(released?.state).toBe("released")
+        expect(active?.state).toBe("active")
+        expect(active?.lease_id).toBe(second.leaseId)
+      }),
+      file,
+    )
+  })
+
+  test("stale lease cannot release a replacement claim or reservation", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const old = yield* SwarmClaims.claim({ taskId, ownerId: "old-worker", leaseMs: 5, actor: "act_test", corrId: "cor_old" as any })
+        yield* Effect.sleep("20 millis")
+        const fresh = yield* SwarmClaims.claim({ taskId, ownerId: "new-worker", leaseMs: 60000, actor: "act_test", corrId: "cor_new" as any })
+        const staleRelease = yield* Effect.exit(SwarmClaims.release({ taskId, leaseId: old.leaseId, fence: old.fence, corrId: "cor_stale" as any }))
+        expect(staleRelease._tag).toBe("Failure")
+        const { db } = yield* Database.Service
+        const claim = yield* db.get<{ lease_id: string; fence: number; state: string }>(sql`SELECT lease_id, fence, state FROM kilo_swarm_claim WHERE task_id = ${taskId}`)
+        const reservation = yield* db.get<{ lease_id: string; fence: number; state: string }>(sql`SELECT lease_id, fence, state FROM kilo_swarm_worker_reservation WHERE task_id = ${taskId}`)
+        expect(claim?.lease_id).toBe(fresh.leaseId)
+        expect(claim?.fence).toBe(fresh.fence)
+        expect(claim?.state).toBe("active")
+        expect(reservation?.lease_id).toBe(fresh.leaseId)
+        expect(reservation?.fence).toBe(fresh.fence)
+        expect(reservation?.state).toBe("active")
+      }),
+      file,
+    )
+  })
 })
