@@ -9,7 +9,7 @@ export default {
       // pre-migration claims keep consuming logical admission capacity.
       yield* tx.run(`
         ALTER TABLE \`kilo_swarm\`
-        ADD COLUMN \`max_workers\` integer DEFAULT 4 NOT NULL CHECK (\`max_workers\` >= 0)
+        ADD COLUMN \`max_workers\` integer DEFAULT 4 NOT NULL
       `)
       yield* tx.run(`
         DROP INDEX IF EXISTS \`kilo_swarm_task_swarm_state_idx\`
