@@ -297,7 +297,7 @@ describe("swarm concurrency (M2)", () => {
         new Response(child.stderr).text(),
       ])
       expect(exitCode, `worker process failed: ${stderr}`).toBe(0)
-      const line = stdout.trim().split(/\\r?\\n/).filter(Boolean).at(-1)
+      const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1)
       expect(line, `worker process emitted no result: ${stderr}`).toBeTruthy()
       return JSON.parse(line!) as { ok: boolean; ownerId: string; tag?: string; fence?: number }
     }))
@@ -314,9 +314,72 @@ describe("swarm concurrency (M2)", () => {
         const { db } = yield* Database.Service
         const active = yield* db.get<{ count: number }>(sql`
           SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation
-          WHERE swarm_id = ${setup.swarmId} AND state = "active" AND expires_at > ${Date.now()}
+          WHERE swarm_id = ${setup.swarmId} AND state = 'active' AND expires_at > ${Date.now()}
         `)
         expect(active?.count).toBe(2)
+      }),
+      file,
+    )
+  })
+  test("cross-process claim race advances a task fence exactly once", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    const setup = await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 4 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        return { swarmId, taskId }
+      }),
+      file,
+    )
+    const workerPath = path.join(import.meta.dir, "..", "fixture/swarm-admission-worker.ts")
+    const children = Array.from({ length: 4 }, (_, i) =>
+      Bun.spawn([process.execPath, workerPath, file, setup.taskId, `same-task-${i}`], { stdout: "pipe", stderr: "pipe" }),
+    )
+    const outcomes = await Promise.all(children.map(async (child) => {
+      const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      expect(exitCode, `claim worker process failed: ${stderr}`).toBe(0)
+      const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1)
+      expect(line, `claim worker emitted no result: ${stderr}`).toBeTruthy()
+      return JSON.parse(line!) as { ok: boolean; tag?: string; fence?: number }
+    }))
+    expect(outcomes.filter((outcome) => outcome.ok).length).toBe(1)
+    const rejected = outcomes.filter((outcome) => !outcome.ok)
+    expect(rejected.length).toBe(3)
+    expect(rejected.every((outcome) => outcome.tag === "SwarmClaims.ClaimConflict")).toBe(true)
+    await use(
+      Effect.gen(function* () {
+        const task = yield* SwarmState.getTask(setup.taskId)
+        expect(task.fence).toBe(1)
+        const { db } = yield* Database.Service
+        const claim = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_claim WHERE task_id = ${setup.taskId} AND state = 'active'`)
+        const events = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${setup.taskId} AND type LIKE 'swarm.task.claimed%'`)
+        expect(claim?.count).toBe(1)
+        expect(events?.count).toBe(1)
+      }),
+      file,
+    )
+  })
+
+  test("active lease renewal extends its capacity reservation atomically", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const claim = yield* SwarmClaims.claim({ taskId, ownerId: "renew-worker", leaseMs: 60000, actor: "act_test", corrId: "cor_test" as any })
+        const renewed = yield* SwarmClaims.renew({ taskId, leaseId: claim.leaseId, fence: claim.fence, leaseMs: 120000 })
+        expect(renewed.expiresAt).toBeGreaterThan(claim.expiresAt)
+        const { db } = yield* Database.Service
+        const rows = yield* db.get<{ claim_expiry: number; reservation_expiry: number; reservation_state: string }>(sql`
+          SELECT c.expires_at AS claim_expiry, r.expires_at AS reservation_expiry, r.state AS reservation_state
+          FROM kilo_swarm_claim c JOIN kilo_swarm_worker_reservation r ON r.task_id = c.task_id
+          WHERE c.task_id = ${taskId}
+        `)
+        expect(rows?.claim_expiry).toBe(renewed.expiresAt)
+        expect(rows?.reservation_expiry).toBe(renewed.expiresAt)
+        expect(rows?.reservation_state).toBe("active")
       }),
       file,
     )
