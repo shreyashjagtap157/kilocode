@@ -12,21 +12,23 @@ const layer = Layer.mergeAll(db, events)
 const result = await Effect.runPromise(
   Effect.provide(layer)(
     Effect.scoped(
-      Effect.either(
-        SwarmClaims.claim({
-          taskId,
+      SwarmClaims.claim({
+        taskId,
+        ownerId,
+        leaseMs: 60_000,
+        actor: "act_process_test",
+        corrId: `cor_${ownerId}` as any,
+      }).pipe(
+        Effect.map((claim) => ({ ok: true as const, ownerId, fence: claim.fence, leaseId: claim.leaseId })),
+        Effect.catch((error) => Effect.succeed({
+          ok: false as const,
           ownerId,
-          leaseMs: 60_000,
-          actor: "act_process_test",
-          corrId: `cor_${ownerId}` as any,
-        }),
+          tag: (error as { _tag?: string })._tag ?? "unknown",
+          message: (error as { message?: string }).message ?? String(error),
+        })),
       ),
     ),
   ),
 )
 
-if (result._tag === "Right") {
-  process.stdout.write(JSON.stringify({ ok: true, ownerId, fence: result.right.fence, leaseId: result.right.leaseId }) + "\n")
-} else {
-  process.stdout.write(JSON.stringify({ ok: false, ownerId, tag: result.left._tag, message: result.left.message }) + "\n")
-}
+process.stdout.write(JSON.stringify(result) + "\n")
