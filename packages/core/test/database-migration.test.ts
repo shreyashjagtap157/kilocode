@@ -147,8 +147,8 @@ describe("DatabaseMigration", () => {
           { task_id: "tsk_active", owner_id: "worker_a", lease_id: "lease_a", fence: 1, state: "active" },
           { task_id: "tsk_expired", owner_id: "worker_b", lease_id: "lease_b", fence: 2, state: "expired" },
         ])
-        const index = yield* db.get<{ unique: number }>(sql`SELECT "unique" AS unique FROM pragma_index_list('kilo_swarm_task') WHERE name = 'kilo_swarm_task_swarm_state_idx'`)
-        expect(index?.unique).toBe(0)
+        const index = yield* db.get<{ is_unique: number }>(sql`SELECT "unique" AS is_unique FROM pragma_index_list('kilo_swarm_task') WHERE name = 'kilo_swarm_task_swarm_state_idx'`)
+        expect(index?.is_unique).toBe(0)
         // Multiple queued tasks in one swarm must now be legal.
         yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_queued_1', 'swm_legacy', 'queued', 1, 1)`)
         yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_queued_2', 'swm_legacy', 'queued', 1, 1)`)
