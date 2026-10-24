@@ -38,6 +38,9 @@ export namespace SwarmClaims {
   }) {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
+    if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs <= 0) {
+      return yield* Effect.fail(new LeaseExpired({ message: `leaseMs must be a positive safe integer for ${input.taskId}` }))
+    }
     const task = yield* SwarmState.getTask(input.taskId)
     const now = Date.now()
     const expiresAt = now + input.leaseMs
@@ -83,14 +86,13 @@ export namespace SwarmClaims {
           if (!swarm || !Number.isSafeInteger(swarm.max_workers) || swarm.max_workers < 0) {
             return yield* Effect.die(new CapacityConflict({ message: `missing or invalid worker capacity for swarm ${task.swarm_id}` }))
           }
-          yield* db.run(sql`
-            UPDATE kilo_swarm_worker_reservation SET state = 'expired', time_updated = ${nowInTransaction}
-            WHERE state = 'active' AND expires_at <= ${nowInTransaction}
-          `)
           const active = yield* db.get<{ count: number }>(sql`
             SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation
             WHERE swarm_id = ${task.swarm_id} AND state = 'active' AND expires_at > ${nowInTransaction}
           `)
+          if (expiresAt <= nowInTransaction) {
+            return yield* Effect.die(new LeaseExpired({ message: `lease expired before claim admission for ${input.taskId}` }))
+          }
           if ((active?.count ?? 0) >= swarm.max_workers) {
             return yield* Effect.die(new CapacityConflict({ message: `swarm ${task.swarm_id} has reached its worker capacity of ${swarm.max_workers}` }))
           }
@@ -114,7 +116,7 @@ export namespace SwarmClaims {
         }).pipe(Effect.orDie),
       },
     ).pipe(Effect.catchDefect((defect) => {
-      if (defect instanceof ClaimConflict || defect instanceof CapacityConflict) return Effect.fail(defect)
+      if (defect instanceof ClaimConflict || defect instanceof CapacityConflict || defect instanceof LeaseExpired) return Effect.fail(defect)
       return Effect.die(defect)
     }))
 
