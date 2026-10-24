@@ -120,10 +120,10 @@ describe("swarm concurrency (M2)", () => {
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm()
         const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
-        const claim = yield* SwarmClaims.claim({ taskId, ownerId: "w1", leaseMs: 20, actor: "act_test", corrId: "cor_test" as any })
+        const claim = yield* SwarmClaims.claim({ taskId, ownerId: "w1", leaseMs: 100, actor: "act_test", corrId: "cor_test" as any })
 
         // Let the lease expire.
-        yield* Effect.sleep("50 millis")
+        yield* Effect.sleep("150 millis")
 
         // Attempt renewal of the now-expired lease must fail.
         const renewed = yield* SwarmClaims.renew({
