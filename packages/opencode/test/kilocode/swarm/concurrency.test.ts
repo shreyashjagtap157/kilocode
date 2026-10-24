@@ -253,8 +253,8 @@ describe("swarm concurrency (M2)", () => {
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
         const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
-        const old = yield* SwarmClaims.claim({ taskId, ownerId: "old-worker", leaseMs: 5, actor: "act_test", corrId: "cor_old" as any })
-        yield* Effect.sleep("20 millis")
+        const old = yield* SwarmClaims.claim({ taskId, ownerId: "old-worker", leaseMs: 200, actor: "act_test", corrId: "cor_old" as any })
+        yield* Effect.sleep("250 millis")
         const fresh = yield* SwarmClaims.claim({ taskId, ownerId: "new-worker", leaseMs: 60000, actor: "act_test", corrId: "cor_new" as any })
         const staleRelease = yield* Effect.exit(SwarmClaims.release({ taskId, leaseId: old.leaseId, fence: old.fence, corrId: "cor_stale" as any }))
         expect(staleRelease._tag).toBe("Failure")
