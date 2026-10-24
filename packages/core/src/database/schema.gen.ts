@@ -167,21 +167,6 @@ export default {
         );
       `)
       yield* tx.run(`
-        CREATE TABLE \`kilo_swarm_worker_reservation\` (
-          \`task_id\` text PRIMARY KEY,
-          \`swarm_id\` text NOT NULL,
-          \`owner_id\` text NOT NULL,
-          \`lease_id\` text NOT NULL,
-          \`fence\` integer NOT NULL,
-          \`expires_at\` integer NOT NULL,
-          \`state\` text NOT NULL,
-          \`time_created\` integer NOT NULL,
-          \`time_updated\` integer NOT NULL,
-          CONSTRAINT \`fk_kilo_swarm_worker_reservation_task_id_kilo_swarm_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`kilo_swarm_task\`(\`id\`) ON DELETE CASCADE,
-          CONSTRAINT \`fk_kilo_swarm_worker_reservation_swarm_id_kilo_swarm_id_fk\` FOREIGN KEY (\`swarm_id\`) REFERENCES \`kilo_swarm\`(\`id\`) ON DELETE CASCADE
-        );
-      `)
-      yield* tx.run(`
         CREATE TABLE \`kilo_swarm_task_transition\` (
           \`id\` text PRIMARY KEY,
           \`task_id\` text NOT NULL,
@@ -356,6 +341,21 @@ export default {
         `CREATE UNIQUE INDEX \`kilo_board_message_board_seq_idx\` ON \`kilo_board_message\` (\`board_root_session_id\`,\`seq\`);`,
       )
       // kilocode_change end
+      yield* tx.run(`
+        CREATE TABLE \`kilo_swarm_worker_reservation\` (
+          \`task_id\` text PRIMARY KEY,
+          \`swarm_id\` text NOT NULL,
+          \`owner_id\` text NOT NULL,
+          \`lease_id\` text NOT NULL,
+          \`fence\` integer NOT NULL,
+          \`expires_at\` integer NOT NULL,
+          \`state\` text NOT NULL,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_kilo_swarm_worker_reservation_task_id_kilo_swarm_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`kilo_swarm_task\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_kilo_swarm_worker_reservation_swarm_id_kilo_swarm_id_fk\` FOREIGN KEY (\`swarm_id\`) REFERENCES \`kilo_swarm\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
       yield* tx.run(
         `CREATE UNIQUE INDEX \`kilo_swarm_idempotency_scope_key_idx\` ON \`kilo_swarm_idempotency\` (\`scope\`,\`key\`);`,
       )
