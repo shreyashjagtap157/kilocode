@@ -204,7 +204,7 @@ describe("swarm state (M2)", () => {
         // transaction but before the claim commit hook runs. The claim must
         // reject and rollback the marker, event, fence, claim, and reservation.
         yield* events.project(SwarmTaskClaimed, () =>
-          db.run(sql`UPDATE kilo_swarm_task SET cancel_requested = 1 WHERE id = ${taskId}`).pipe(Effect.asVoid),
+          db.run(sql`UPDATE kilo_swarm_task SET cancel_requested = 1 WHERE id = ${taskId}`).pipe(Effect.asVoid, Effect.orDie),
         )
         const attempt = yield* Effect.exit(
           SwarmClaims.claim({ taskId, ownerId: "racing-worker", leaseMs: 60000, actor: "act_test", corrId: "cor_race" as any }),
