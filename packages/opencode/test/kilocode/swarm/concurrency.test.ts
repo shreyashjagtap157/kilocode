@@ -191,7 +191,10 @@ describe("swarm concurrency (M2)", () => {
         const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
         const taskIds = yield* Effect.forEach(Array.from({ length: 12 }, () => 0), () => SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any }))
         const results = yield* Effect.all(taskIds.map((taskId, i) => Effect.exit(SwarmClaims.claim({ taskId, ownerId: `worker-${i}`, leaseMs: 60000, actor: "act_test", corrId: `cor-${i}` as any }))), { concurrency: "unbounded" })
-        expect(results.filter((result) => result._tag === "Success").length).toBe(2)
+        expect(
+          results.filter((result) => result._tag === "Success").length,
+          JSON.stringify(results.map((result) => result._tag === "Success" ? { tag: "Success" } : { tag: "Failure", cause: result.cause })),
+        ).toBe(2)
         expect(results.filter((result) => result._tag === "Failure").length).toBe(10)
         const { db } = yield* Database.Service
         const reservations = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation WHERE swarm_id = ${swarmId} AND state = 'active' AND expires_at > ${Date.now()}`)
