@@ -2,15 +2,10 @@
 import { Effect, Schema } from "effect"
 import { randomUUID } from "node:crypto"
 import { Database } from "@opencode-ai/core/database/database"
-import * as Log from "@opencode-ai/core/util/log"
 import { sql } from "drizzle-orm"
-import { LeaseToken } from "./schema"
-import { SwarmClaimTable, SwarmTaskTable } from "@opencode-ai/core/kilocode/swarm/sql"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SwarmTaskClaimed, SwarmTaskReleased } from "./events"
 import { SwarmState } from "./state"
-
-const log = Log.create({ service: "swarm.claims" })
 
 export namespace SwarmClaims {
   export class ClaimConflict extends Schema.TaggedErrorClass<ClaimConflict>()("SwarmClaims.ClaimConflict", {
