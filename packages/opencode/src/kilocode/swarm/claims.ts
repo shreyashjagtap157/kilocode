@@ -39,6 +39,9 @@ export namespace SwarmClaims {
     const task = yield* SwarmState.getTask(input.taskId)
     const now = Date.now()
     const expiresAt = now + input.leaseMs
+    if (!Number.isSafeInteger(expiresAt)) {
+      return yield* Effect.fail(new LeaseExpired({ message: `lease expiry is outside the supported integer range for ${input.taskId}` }))
+    }
 
     // Fast rejection only. The same predicate is rechecked inside the
     // EventV2 BEGIN IMMEDIATE transaction, where it is authoritative.
@@ -128,7 +131,13 @@ export namespace SwarmClaims {
     return yield* db.transaction(
       (tx) => Effect.gen(function* () {
         const now = Date.now()
+        if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs <= 0) {
+          return yield* Effect.fail(new LeaseExpired({ message: `leaseMs must be a positive safe integer for ${input.taskId}` }))
+        }
         const expiresAt = now + input.leaseMs
+        if (!Number.isSafeInteger(expiresAt)) {
+          return yield* Effect.fail(new LeaseExpired({ message: `lease expiry is outside the supported integer range for ${input.taskId}` }))
+        }
         const updated = yield* tx.get<{ expires_at: number }>(sql`
           UPDATE kilo_swarm_claim SET expires_at = ${expiresAt}, time_updated = ${now}
           WHERE task_id = ${input.taskId} AND lease_id = ${input.leaseId} AND fence = ${input.fence}
