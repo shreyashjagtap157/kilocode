@@ -39,13 +39,21 @@ export namespace SwarmState {
     message: Schema.String,
   }) {}
 
+  export class InvalidCapacity extends Schema.TaggedErrorClass<InvalidCapacity>()("SwarmState.InvalidCapacity", {
+    message: Schema.String,
+  }) {}
+
   // --- swarm -----------------------------------------------------------------
 
-  export const createSwarm = Effect.fn("SwarmState.createSwarm")(function* () {
+  export const createSwarm = Effect.fn("SwarmState.createSwarm")(function* (input: { maxWorkers?: number } = {}) {
     const { db } = yield* Database.Service
+    const maxWorkers = input.maxWorkers ?? 4
+    if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 0) {
+      return yield* Effect.fail(new InvalidCapacity({ message: "maxWorkers must be a non-negative safe integer" }))
+    }
     const id = newSwarmId()
     const now = Date.now()
-    yield* db.run(sql`INSERT INTO kilo_swarm (id, state, version, time_created, time_updated) VALUES (${id}, 'active', 0, ${now}, ${now})`)
+    yield* db.run(sql`INSERT INTO kilo_swarm (id, state, version, max_workers, time_created, time_updated) VALUES (${id}, 'active', 0, ${maxWorkers}, ${now}, ${now})`)
     return id
   })
 
@@ -168,16 +176,26 @@ export namespace SwarmState {
         {
           commit: (eventSeq) =>
             Effect.gen(function* () {
-              // CAS on version
-              const res = yield* db.run(sql`
+              // Revalidate the snapshot under EventV2's immediate transaction.
+              // Claim acquisition also advances fence without changing task version.
+              const current = yield* db.get<{ state: string; version: number; fence: number }>(sql`
+                SELECT state, version, fence FROM kilo_swarm_task WHERE id = ${input.taskId}
+              `)
+              if (!current || current.state !== from || current.version !== task.version || current.fence !== task.fence || current.version !== input.expectedVersion) {
+                return yield* Effect.die(new VersionConflict({ message: "CAS failed: task state, version, or fence changed" }))
+              }
+              const currentAllowed = (Lifecycle as any)[current.state] as string[] | undefined
+              if (!currentAllowed || !currentAllowed.includes(input.to)) {
+                return yield* Effect.die(new IllegalTransition({ message: `illegal transition ${current.state} -> ${input.to}` }))
+              }
+              const updated = yield* db.get<{ id: string }>(sql`
                 UPDATE kilo_swarm_task
                 SET state = ${input.to}, version = ${nextVersion}, time_updated = ${now}
-                WHERE id = ${input.taskId} AND version = ${task.version}
+                WHERE id = ${input.taskId} AND version = ${task.version} AND state = ${from} AND fence = ${task.fence}
+                RETURNING id
               `)
-              // drizzle run returns; check rows affected via a follow-up select
-              const check = yield* db.get<{ version: number }>(sql`SELECT version FROM kilo_swarm_task WHERE id = ${input.taskId}`)
-              if (!check || check.version !== nextVersion) {
-                return yield* Effect.die(new VersionConflict({ message: "CAS failed: version mismatch" }))
+              if (!updated) {
+                return yield* Effect.die(new VersionConflict({ message: "CAS update changed no task row" }))
               }
               yield* db.run(sql`
                 INSERT INTO kilo_swarm_task_transition (id, task_id, swarm_id, seq, from_state, to_state, version_before, version_after, fence, actor, corr_id, idem_key, time_created)
@@ -190,7 +208,6 @@ export namespace SwarmState {
                 `)
               }
               void eventSeq
-              void res
             }).pipe(Effect.orDie),
         },
       )

@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
 
 /**
  * Kilo Swarm M2 — durable persistence (Kilo-owned).
@@ -14,6 +14,7 @@ export const SwarmTable = sqliteTable("kilo_swarm", {
   id: text().notNull().primaryKey(),
   state: text().notNull(),
   version: integer().notNull().default(0),
+  max_workers: integer().notNull().default(4),
   time_created: integer().notNull(),
   time_updated: integer().notNull(),
 })
@@ -34,7 +35,7 @@ export const SwarmTaskTable = sqliteTable(
     time_created: integer().notNull(),
     time_updated: integer().notNull(),
   },
-  (table) => [uniqueIndex("kilo_swarm_task_swarm_state_idx").on(table.swarm_id, table.state)],
+  (table) => [index("kilo_swarm_task_swarm_state_idx").on(table.swarm_id, table.state)],
 )
 
 export const SwarmTaskTransitionTable = sqliteTable(
@@ -72,6 +73,22 @@ export const SwarmClaimTable = sqliteTable("kilo_swarm_claim", {
   time_created: integer().notNull(),
   time_updated: integer().notNull(),
 })
+
+export const SwarmWorkerReservationTable = sqliteTable(
+  "kilo_swarm_worker_reservation",
+  {
+    task_id: text().notNull().primaryKey().references(() => SwarmTaskTable.id, { onDelete: "cascade" }),
+    swarm_id: text().notNull().references(() => SwarmTable.id, { onDelete: "cascade" }),
+    owner_id: text().notNull(),
+    lease_id: text().notNull(),
+    fence: integer().notNull(),
+    expires_at: integer().notNull(),
+    state: text().notNull(),
+    time_created: integer().notNull(),
+    time_updated: integer().notNull(),
+  },
+  (table) => [index("kilo_swarm_worker_reservation_active_idx").on(table.swarm_id, table.state, table.expires_at)],
+)
 
 export const SwarmIdempotencyTable = sqliteTable(
   "kilo_swarm_idempotency",

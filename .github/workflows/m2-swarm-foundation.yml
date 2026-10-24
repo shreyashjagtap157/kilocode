@@ -1,0 +1,65 @@
+name: M2 Swarm Foundation
+
+on:
+  pull_request:
+    paths:
+      - 'packages/core/schema.json'
+      - 'packages/core/src/database/**'
+      - 'packages/core/src/kilocode/swarm/**'
+      - 'packages/core/test/database-migration.test.ts'
+      - 'packages/core/test/event.test.ts'
+      - 'packages/opencode/src/kilocode/swarm/**'
+      - 'packages/opencode/test/kilocode/swarm/**'
+      - 'packages/opencode/test/kilocode/fixture/swarm-admission-worker.ts'
+      - '.github/workflows/m2-swarm-foundation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/core/schema.json'
+      - 'packages/core/src/database/**'
+      - 'packages/core/src/kilocode/swarm/**'
+      - 'packages/core/test/database-migration.test.ts'
+      - 'packages/core/test/event.test.ts'
+      - 'packages/opencode/src/kilocode/swarm/**'
+      - 'packages/opencode/test/kilocode/swarm/**'
+      - 'packages/opencode/test/kilocode/fixture/swarm-admission-worker.ts'
+      - '.github/workflows/m2-swarm-foundation.yml'
+
+concurrency:
+  group: m2-swarm-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Migration and swarm regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Verify migration snapshot and generated schema
+        working-directory: packages/core
+        run: |
+          bun script/migration.ts --check
+          bun script/migration.ts
+          git --no-pager diff -- src/database/schema.gen.ts
+
+      - name: Test durable events and migration upgrades
+        working-directory: packages/core
+        run: bun test test/event.test.ts test/database-migration.test.ts --timeout 60000
+
+      - name: Test swarm state, claims, reservations, recovery, and process races
+        working-directory: packages/opencode
+        run: bun test test/kilocode/swarm --timeout 60000
+        env:
+          KILO_EXPERIMENTAL_DISABLE_FILEWATCHER: 'true'
+
+      - name: Verify generated schema is committed
+        run: git diff --exit-code -- packages/core/src/database/schema.gen.ts

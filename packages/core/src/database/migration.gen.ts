@@ -45,5 +45,6 @@ export const migrations = (
     import("./migration/20260903104806_kilocode_board_reset"), // kilocode_change
     import("./migration/20260907102000_kilocode_model_usage_index"), // kilocode_change
     import("./migration/20261018105650_kilocode_swarm"),
+    import("./migration/20261024210000_kilocode_swarm_atomic_admission"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

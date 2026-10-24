@@ -167,8 +167,8 @@ describe("swarm state (M2)", () => {
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm()
         const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
-        yield* SwarmClaims.claim({ taskId, ownerId: "w1", leaseMs: 1, actor: "act_test", corrId: "cor_test" as any })
-        yield* Effect.sleep("10 millis")
+        yield* SwarmClaims.claim({ taskId, ownerId: "w1", leaseMs: 100, actor: "act_test", corrId: "cor_test" as any })
+        yield* Effect.sleep("150 millis")
         yield* SwarmRecovery.reconcile()
       }),
       file,
@@ -176,13 +176,18 @@ describe("swarm state (M2)", () => {
     const layer2 = dbLayer(file)
     const ev2 = EventV2.layerWith().pipe(Layer.provide(layer2))
     const full2 = Layer.mergeAll(layer2, ev2)
-    const claimState = await Effect.runPromise(
+    const states = await Effect.runPromise(
       Effect.gen(function* () {
         const { db } = yield* Database.Service
-        const row = yield* db.get<{ state: string }>(sql`SELECT state FROM kilo_swarm_claim WHERE task_id IN (SELECT id FROM kilo_swarm_task)`)
-        return row?.state ?? "none"
+        return yield* db.get<{ claim_state: string; reservation_state: string }>(sql`
+          SELECT c.state AS claim_state, r.state AS reservation_state
+          FROM kilo_swarm_claim c
+          JOIN kilo_swarm_worker_reservation r ON r.task_id = c.task_id
+          WHERE c.task_id IN (SELECT id FROM kilo_swarm_task)
+        `)
       }).pipe(Effect.provide(full2)),
     )
-    expect(claimState).toBe("expired")
+    expect(states?.claim_state).toBe("expired")
+    expect(states?.reservation_state).toBe("expired")
   })
 })

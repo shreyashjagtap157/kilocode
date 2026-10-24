@@ -224,8 +224,8 @@ describe("swarm atomicity, events, idempotency, crash (M2)", () => {
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm()
         const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
-        yield* SwarmClaims.claim({ taskId, ownerId: "w1", leaseMs: 1, actor: "act_test", corrId: "cor_test" as any })
-        yield* Effect.sleep("5 millis")
+        yield* SwarmClaims.claim({ taskId, ownerId: "w1", leaseMs: 100, actor: "act_test", corrId: "cor_test" as any })
+        yield* Effect.sleep("150 millis")
         yield* SwarmRecovery.reconcile()
         const first = yield* SwarmClaims.assertOwnership({ taskId, leaseId: "none", fence: 0 }).pipe(Effect.catchCause(() => Effect.succeed("failed")))
         expect(first).toBe("failed")
