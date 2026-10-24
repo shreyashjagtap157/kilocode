@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "f880a31c-fdf4-44c3-8a85-0e06b7ad302b",
+  "id": "c4b2f8fa-66a4-4f0f-bef6-2d3b924a6d87",
   "prevIds": [
-    "8e919778-bf29-4e1b-a106-88bc9d8b8b21"
+    "f880a31c-fdf4-44c3-8a85-0e06b7ad302b"
   ],
   "ddl": [
     {
@@ -64,6 +64,10 @@
     },
     {
       "name": "kilo_swarm_task_transition",
+      "entityType": "tables"
+    },
+    {
+      "name": "kilo_swarm_worker_reservation",
       "entityType": "tables"
     },
     {
@@ -924,6 +928,16 @@
       "type": "integer",
       "notNull": true,
       "autoincrement": false,
+      "default": "4",
+      "generated": null,
+      "name": "max_workers",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
       "default": null,
       "generated": null,
       "name": "time_created",
@@ -1049,6 +1063,96 @@
       "name": "id",
       "entityType": "columns",
       "table": "kilo_swarm_task_transition"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "swarm_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "lease_id",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fence",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "kilo_swarm_worker_reservation"
     },
     {
       "type": "text",
@@ -2232,6 +2336,36 @@
     },
     {
       "columns": [
+        "task_id"
+      ],
+      "tableTo": "kilo_swarm_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_kilo_swarm_worker_reservation_task_id_kilo_swarm_task_id_fk",
+      "entityType": "fks",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "columns": [
+        "swarm_id"
+      ],
+      "tableTo": "kilo_swarm",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_kilo_swarm_worker_reservation_swarm_id_kilo_swarm_id_fk",
+      "entityType": "fks",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "columns": [
         "project_id"
       ],
       "tableTo": "project",
@@ -2529,6 +2663,15 @@
     },
     {
       "columns": [
+        "task_id"
+      ],
+      "nameExplicit": false,
+      "name": "kilo_swarm_worker_reservation_pk",
+      "entityType": "pks",
+      "table": "kilo_swarm_worker_reservation"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -2695,7 +2838,7 @@
           "isExpression": false
         }
       ],
-      "isUnique": true,
+      "isUnique": false,
       "where": null,
       "origin": "manual",
       "name": "kilo_swarm_task_swarm_state_idx",
@@ -2719,6 +2862,28 @@
       "name": "kilo_swarm_task_transition_task_seq_idx",
       "entityType": "indexes",
       "table": "kilo_swarm_task_transition"
+    },
+    {
+      "columns": [
+        {
+          "value": "swarm_id",
+          "isExpression": false
+        },
+        {
+          "value": "state",
+          "isExpression": false
+        },
+        {
+          "value": "expires_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "kilo_swarm_worker_reservation_active_idx",
+      "entityType": "indexes",
+      "table": "kilo_swarm_worker_reservation"
     },
     {
       "columns": [
