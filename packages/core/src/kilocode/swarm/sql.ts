@@ -1,4 +1,5 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { sql } from "drizzle-orm"
 
 /**
  * Kilo Swarm M2 — durable persistence (Kilo-owned).
@@ -17,7 +18,7 @@ export const SwarmTable = sqliteTable("kilo_swarm", {
   max_workers: integer().notNull().default(4),
   time_created: integer().notNull(),
   time_updated: integer().notNull(),
-})
+}, (table) => [check("kilo_swarm_max_workers_nonnegative", sql`${table.max_workers} >= 0`)])
 
 export const SwarmTaskTable = sqliteTable(
   "kilo_swarm_task",
