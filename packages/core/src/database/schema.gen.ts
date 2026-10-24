@@ -146,7 +146,7 @@ export default {
           \`id\` text PRIMARY KEY,
           \`state\` text NOT NULL,
           \`version\` integer DEFAULT 0 NOT NULL,
-          \`max_workers\` integer DEFAULT 4 NOT NULL CHECK (\`max_workers\` >= 0),
+          \`max_workers\` integer DEFAULT 4 NOT NULL,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL
         );
