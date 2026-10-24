@@ -356,7 +356,6 @@ export default {
         `CREATE UNIQUE INDEX \`kilo_board_message_board_seq_idx\` ON \`kilo_board_message\` (\`board_root_session_id\`,\`seq\`);`,
       )
       // kilocode_change end
-`)
       yield* tx.run(
         `CREATE UNIQUE INDEX \`kilo_swarm_idempotency_scope_key_idx\` ON \`kilo_swarm_idempotency\` (\`scope\`,\`key\`);`,
       )
