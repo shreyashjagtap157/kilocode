@@ -6,6 +6,7 @@ import { tmpdir } from "../../fixture/fixture"
 import { sql } from "drizzle-orm"
 import { Layer } from "effect"
 import { SwarmState } from "@/kilocode/swarm/state"
+import { SwarmTaskClaimed } from "@/kilocode/swarm/events"
 import { SwarmClaims } from "@/kilocode/swarm/claims"
 import { SwarmRecovery } from "@/kilocode/swarm/recovery"
 
@@ -189,6 +190,40 @@ describe("swarm state (M2)", () => {
     )
   })
 
+  test("claim rechecks cancellation inside the durable event transaction", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const { db } = yield* Database.Service
+        const events = yield* EventV2.Service
+
+        // Inject a cancellation marker after EventV2 has acquired its immediate
+        // transaction but before the claim commit hook runs. The claim must
+        // reject and rollback the marker, event, fence, claim, and reservation.
+        yield* events.project(SwarmTaskClaimed, () =>
+          db.run(sql`UPDATE kilo_swarm_task SET cancel_requested = 1 WHERE id = ${taskId}`).pipe(Effect.asVoid),
+        )
+        const attempt = yield* Effect.exit(
+          SwarmClaims.claim({ taskId, ownerId: "racing-worker", leaseMs: 60000, actor: "act_test", corrId: "cor_race" as any }),
+        )
+        expect(attempt._tag).toBe("Failure")
+
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.cancel_requested).toBe(0)
+        expect(task.fence).toBe(0)
+        const claimCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_claim WHERE task_id = ${taskId}`)
+        const reservationCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation WHERE task_id = ${taskId}`)
+        const eventCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.claimed%'`)
+        expect(claimCount?.count).toBe(0)
+        expect(reservationCount?.count).toBe(0)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
   test("claim rejects a task that has already reached a terminal state", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
