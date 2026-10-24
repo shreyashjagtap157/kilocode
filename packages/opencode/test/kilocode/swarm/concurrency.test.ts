@@ -4,6 +4,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { tmpdir } from "../../fixture/fixture"
 import { sql } from "drizzle-orm"
+import path from "path"
 import { SwarmState } from "@/kilocode/swarm/state"
 import { SwarmClaims } from "@/kilocode/swarm/claims"
 
@@ -267,6 +268,55 @@ describe("swarm concurrency (M2)", () => {
         expect(reservation?.lease_id).toBe(fresh.leaseId)
         expect(reservation?.fence).toBe(fresh.fence)
         expect(reservation?.state).toBe("active")
+      }),
+      file,
+    )
+  })
+  test("cross-process worker admission respects configured capacity", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    const setup = await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
+        const taskIds = yield* Effect.forEach(Array.from({ length: 8 }, () => 0), () =>
+          SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any }),
+        )
+        return { swarmId, taskIds }
+      }),
+      file,
+    )
+
+    const workerPath = path.join(import.meta.dir, "..", "fixture/swarm-admission-worker.ts")
+    const children = setup.taskIds.map((taskId, i) =>
+      Bun.spawn([process.execPath, workerPath, file, taskId, `process-${i}`], { stdout: "pipe", stderr: "pipe" }),
+    )
+    const outcomes = await Promise.all(children.map(async (child) => {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
+      expect(exitCode, `worker process failed: ${stderr}`).toBe(0)
+      const line = stdout.trim().split(/\\r?\\n/).filter(Boolean).at(-1)
+      expect(line, `worker process emitted no result: ${stderr}`).toBeTruthy()
+      return JSON.parse(line!) as { ok: boolean; ownerId: string; tag?: string; fence?: number }
+    }))
+
+    const admitted = outcomes.filter((outcome) => outcome.ok)
+    const rejected = outcomes.filter((outcome) => !outcome.ok)
+    expect(admitted.length).toBe(2)
+    expect(rejected.length).toBe(6)
+    expect(rejected.every((outcome) => outcome.tag === "SwarmClaims.CapacityConflict")).toBe(true)
+    expect(new Set(admitted.map((outcome) => outcome.fence)).size).toBe(1)
+
+    await use(
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const active = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM kilo_swarm_worker_reservation
+          WHERE swarm_id = ${setup.swarmId} AND state = "active" AND expires_at > ${Date.now()}
+        `)
+        expect(active?.count).toBe(2)
       }),
       file,
     )
