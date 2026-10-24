@@ -44,9 +44,10 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
-      - name: Regenerate schema and display exact drift
+      - name: Verify migration snapshot and generated schema
         working-directory: packages/core
         run: |
+          bun script/migration.ts --check
           bun script/migration.ts
           git --no-pager diff -- src/database/schema.gen.ts
 
