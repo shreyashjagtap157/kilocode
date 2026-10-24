@@ -16,6 +16,7 @@ import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migrat
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
+import swarmAtomicAdmissionMigration from "@opencode-ai/core/database/migration/20261024210000_kilocode_swarm_atomic_admission"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -122,6 +123,39 @@ describe("DatabaseMigration", () => {
       expect(result.stdout.toString()).toContain("No schema changes, nothing to migrate")
     }, 30_000)
   }
+
+
+  test("upgrades existing swarm claims into atomic worker reservations", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* db.run(sql`CREATE TABLE kilo_swarm (id text PRIMARY KEY, state text NOT NULL, version integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL)`)
+        yield* db.run(sql`CREATE TABLE kilo_swarm_task (id text PRIMARY KEY, swarm_id text NOT NULL, state text NOT NULL, version integer DEFAULT 0 NOT NULL, fence integer DEFAULT 0 NOT NULL, cancel_requested integer DEFAULT 0 NOT NULL, parent_id text, attempts integer DEFAULT 0 NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, FOREIGN KEY (swarm_id) REFERENCES kilo_swarm(id) ON DELETE CASCADE)`)
+        yield* db.run(sql`CREATE UNIQUE INDEX kilo_swarm_task_swarm_state_idx ON kilo_swarm_task (swarm_id, state)`)
+        yield* db.run(sql`CREATE TABLE kilo_swarm_claim (task_id text PRIMARY KEY, owner_id text NOT NULL, lease_id text NOT NULL, fence integer NOT NULL, expires_at integer NOT NULL, state text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, FOREIGN KEY (task_id) REFERENCES kilo_swarm_task(id) ON DELETE CASCADE)`)
+        yield* db.run(sql`INSERT INTO kilo_swarm (id, state, version, time_created, time_updated) VALUES ('swm_legacy', 'active', 0, 1, 1)`)
+        yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_active', 'swm_legacy', 'running', 1, 1)`)
+        yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_expired', 'swm_legacy', 'reserved', 1, 1)`)
+        yield* db.run(sql`INSERT INTO kilo_swarm_claim (task_id, owner_id, lease_id, fence, expires_at, state, time_created, time_updated) VALUES ('tsk_active', 'worker_a', 'lease_a', 1, 9999999999999, 'active', 1, 1)`)
+        yield* db.run(sql`INSERT INTO kilo_swarm_claim (task_id, owner_id, lease_id, fence, expires_at, state, time_created, time_updated) VALUES ('tsk_expired', 'worker_b', 'lease_b', 2, 1, 'expired', 1, 1)`)
+
+        yield* DatabaseMigration.applyOnly(db, [swarmAtomicAdmissionMigration])
+
+        expect(yield* db.get(sql`SELECT max_workers FROM kilo_swarm WHERE id = 'swm_legacy'`)).toEqual({ max_workers: 4 })
+        expect(yield* db.all(sql`SELECT task_id, owner_id, lease_id, fence, state FROM kilo_swarm_worker_reservation ORDER BY task_id`)).toEqual([
+          { task_id: "tsk_active", owner_id: "worker_a", lease_id: "lease_a", fence: 1, state: "active" },
+          { task_id: "tsk_expired", owner_id: "worker_b", lease_id: "lease_b", fence: 2, state: "expired" },
+        ])
+        const index = yield* db.get<{ unique: number }>(sql`SELECT "unique" AS unique FROM pragma_index_list('kilo_swarm_task') WHERE name = 'kilo_swarm_task_swarm_state_idx'`)
+        expect(index?.unique).toBe(0)
+        // Multiple queued tasks in one swarm must now be legal.
+        yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_queued_1', 'swm_legacy', 'queued', 1, 1)`)
+        yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_queued_2', 'swm_legacy', 'queued', 1, 1)`)
+        expect(yield* db.get(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task WHERE swarm_id = 'swm_legacy' AND state = 'queued'`)).toEqual({ count: 2 })
+      }),
+    )
+  })
 
   test("applies tracked migrations to an empty database", async () => {
     await run(
