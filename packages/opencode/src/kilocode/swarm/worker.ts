@@ -55,6 +55,8 @@ export namespace SwarmWorker {
     corrId: string
     leaseMs?: number
     renewalIntervalMs?: number
+    /** Optional prompt/prepare work executed after durable admission and before resume. */
+    prepare?: Effect.Effect<void>
   }) {
     yield* SwarmDispatcher.beforeExecution({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
     const existing = yield* getBinding(input.taskId)
@@ -65,9 +67,13 @@ export namespace SwarmWorker {
     const execution = yield* SessionExecution.Service
     const leaseMs = input.leaseMs ?? 30_000
     const renewalIntervalMs = input.renewalIntervalMs ?? Math.max(1_000, Math.floor(leaseMs / 3))
+    const work = Effect.gen(function* () {
+      if (input.prepare) yield* input.prepare
+      yield* execution.resume(input.sessionId as any)
+    })
     return yield* SwarmSupervisor.supervise(
       { taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, leaseMs, intervalMs: renewalIntervalMs },
-      execution.resume(input.sessionId as any),
+      work,
     ).pipe(
       Effect.catchAll((error) => Effect.gen(function* () {
         yield* SwarmDispatcher.assertCompletionOwnership({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence }).pipe(Effect.catchAll(() => Effect.void))
