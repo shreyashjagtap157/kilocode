@@ -16,8 +16,8 @@ export namespace SwarmWorker {
 
   /**
    * Resume an already-created Kilo session under a previously admitted swarm
-   * lease. The session itself remains the authority for provider/model/tool
-   * execution; this function only supplies the swarm lifecycle boundary.
+   * lease. Session creation, provider selection, permissions, and tool
+   * execution remain in Kilo's existing session stack.
    *
    * A session ID is required from the caller because M3 does not yet invent a
    * durable task-payload/session mapping. This keeps the bridge honest instead
@@ -50,17 +50,12 @@ export namespace SwarmWorker {
       Effect.catchAll((error) =>
         Effect.gen(function* () {
           // Failure is committed only while this worker still owns the fence.
-          // If ownership was lost, the stale worker must not overwrite the
-          // newer worker's state.
-          const owned = yield* SwarmDispatcher.assertCompletionOwnership({
+          yield* SwarmDispatcher.assertCompletionOwnership({
             taskId: input.taskId,
             leaseId: input.leaseId,
             fence: input.fence,
           })
           const task = yield* SwarmState.getTask(input.taskId)
-          if (owned.fence !== input.fence || task.version < 3) {
-            return yield* Effect.fail(new ExecutionConflict({ message: `task ${input.taskId} lost its execution fence` }))
-          }
           yield* SwarmState.transition({
             taskId: input.taskId,
             to: "failed",
