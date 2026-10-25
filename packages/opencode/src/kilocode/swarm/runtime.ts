@@ -137,4 +137,17 @@ export namespace SwarmRuntime {
       renewalIntervalMs: input.renewalIntervalMs,
     })
   })
+
+  /** Run multiple specialized workers concurrently against one swarm. */
+  export const runPlannedBatch = Effect.fn("SwarmRuntime.runPlannedBatch")(function* (input: {
+    workers: readonly PlannedInput[]
+    concurrency?: number
+  }) {
+    if (input.workers.length === 0) return []
+    const concurrency = input.concurrency ?? input.workers.length
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+      return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
+    }
+    return yield* Effect.all(input.workers.map((worker) => runPlanned(worker)), { concurrency })
+  })
 }
