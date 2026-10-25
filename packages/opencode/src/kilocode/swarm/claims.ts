@@ -145,6 +145,20 @@ export namespace SwarmClaims {
         if (!Number.isSafeInteger(expiresAt)) {
           return yield* Effect.fail(new LeaseExpired({ message: `lease expiry is outside the supported integer range for ${input.taskId}` }))
         }
+
+        // A lease cannot be extended after cancellation or task completion. Do
+        // this check under the same immediate transaction as both lease writes,
+        // and confirm the task still carries this fencing generation.
+        const task = yield* tx.get<{ state: string; fence: number; cancel_requested: number }>(sql`
+          SELECT state, fence, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
+        `)
+        if (!task || task.fence !== input.fence) {
+          return yield* Effect.fail(new StaleFence({ message: `task fence mismatch for ${input.taskId}` }))
+        }
+        if (task.cancel_requested !== 0 || TerminalStates.includes(task.state as any)) {
+          return yield* Effect.fail(new ClaimConflict({ message: `task ${input.taskId} has a cancellation request or is terminal; lease renewal rejected` }))
+        }
+
         const updated = yield* tx.get<{ expires_at: number }>(sql`
           UPDATE kilo_swarm_claim SET expires_at = ${expiresAt}, time_updated = ${now}
           WHERE task_id = ${input.taskId} AND lease_id = ${input.leaseId} AND fence = ${input.fence}

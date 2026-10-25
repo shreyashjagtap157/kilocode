@@ -123,6 +123,68 @@ describe("swarm state (M2)", () => {
     )
   })
 
+  test("lease renewal refuses cancellation-requested and terminal tasks", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+
+        const cancellingTask = yield* SwarmState.createTask({
+          swarmId, actor: "act_test", corrId: "cor_renew_cancel" as any,
+        })
+        const cancellingClaim = yield* SwarmClaims.claim({
+          taskId: cancellingTask, ownerId: "w_cancel", leaseMs: 60_000,
+          actor: "act_test", corrId: "cor_renew_cancel" as any,
+        })
+        yield* SwarmState.requestCancel({
+          taskId: cancellingTask, actor: "act_test", corrId: "cor_renew_cancel" as any,
+        })
+        const cancelledRenewal = yield* Effect.exit(SwarmClaims.renew({
+          taskId: cancellingTask, leaseId: cancellingClaim.leaseId,
+          fence: cancellingClaim.fence, leaseMs: 120_000,
+        }))
+        expect(cancelledRenewal._tag).toBe("Failure")
+
+        const terminalTask = yield* SwarmState.createTask({
+          swarmId, actor: "act_test", corrId: "cor_renew_terminal" as any,
+        })
+        const terminalClaim = yield* SwarmClaims.claim({
+          taskId: terminalTask, ownerId: "w_terminal", leaseMs: 60_000,
+          actor: "act_test", corrId: "cor_renew_terminal" as any,
+        })
+        yield* SwarmState.transition({
+          taskId: terminalTask, to: "cancelled", expectedVersion: 0,
+          actor: "act_test", corrId: "cor_renew_terminal" as any,
+        })
+        const terminalRenewal = yield* Effect.exit(SwarmClaims.renew({
+          taskId: terminalTask, leaseId: terminalClaim.leaseId,
+          fence: terminalClaim.fence, leaseMs: 120_000,
+        }))
+        expect(terminalRenewal._tag).toBe("Failure")
+
+        const { db } = yield* Database.Service
+        const cancelClaim = yield* db.get<{ expires_at: number }>(sql`
+          SELECT expires_at FROM kilo_swarm_claim WHERE task_id = ${cancellingTask}
+        `)
+        const cancelReservation = yield* db.get<{ expires_at: number }>(sql`
+          SELECT expires_at FROM kilo_swarm_worker_reservation WHERE task_id = ${cancellingTask}
+        `)
+        const terminalClaimRow = yield* db.get<{ expires_at: number }>(sql`
+          SELECT expires_at FROM kilo_swarm_claim WHERE task_id = ${terminalTask}
+        `)
+        const terminalReservation = yield* db.get<{ expires_at: number }>(sql`
+          SELECT expires_at FROM kilo_swarm_worker_reservation WHERE task_id = ${terminalTask}
+        `)
+        expect(cancelClaim?.expires_at).toBe(cancellingClaim.expiresAt)
+        expect(cancelReservation?.expires_at).toBe(cancellingClaim.expiresAt)
+        expect(terminalClaimRow?.expires_at).toBe(terminalClaim.expiresAt)
+        expect(terminalReservation?.expires_at).toBe(terminalClaim.expiresAt)
+      }),
+      file,
+    )
+  })
+
   test("idempotency: duplicate create returns same id for the same payload", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
