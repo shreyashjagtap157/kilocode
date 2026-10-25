@@ -1,6 +1,7 @@
 name: M2 Swarm Foundation
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'packages/core/schema.json'
