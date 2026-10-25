@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionPrompt } from "@/session/prompt"
 import { sql } from "drizzle-orm"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
@@ -46,6 +47,15 @@ const use = (effect: any, file: string, resume?: () => Effect.Effect<void>) => {
       return Effect.succeed(sessionInfo(SessionID.make(`ses_swarm_child_${childNumber}`), Permission.fromConfig({ bash: "deny" })))
     },
   } as unknown as Session.Interface)
+  const prompt = Layer.succeed(SessionPrompt.Service, {
+    cancel: () => Effect.void,
+    paused: () => Effect.succeed(false),
+    prompt: () => Effect.succeed(undefined as never),
+    loop: () => Effect.succeed(undefined as never),
+    shell: () => Effect.succeed(undefined as never),
+    command: () => Effect.succeed(undefined as never),
+    resolvePromptParts: () => Effect.succeed([]),
+  } as unknown as SessionPrompt.Interface)
   const execution = resume
     ? Layer.succeed(SessionExecution.Service, {
         active: Effect.succeed(new Set()),
@@ -54,7 +64,7 @@ const use = (effect: any, file: string, resume?: () => Effect.Effect<void>) => {
         interrupt: () => Effect.void,
       })
     : SessionExecution.noopLayer
-  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, execution, sessions))(Effect.scoped(effect)))
+  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, prompt, execution, sessions))(Effect.scoped(effect)))
 }
 
 describe("SwarmRuntime planned worker path (M3)", () => {
@@ -70,6 +80,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           swarmId,
           parentSessionId: parentID,
           description: "inspect the repository",
+          prompt: "Inspect the repository and report the most important findings.",
           caller,
           subagent,
           actor: "act_runtime_test",
@@ -100,6 +111,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           swarmId,
           parentSessionId: parentID,
           description,
+          prompt: `Perform the ${description} role and return concise findings.`,
           caller,
           subagent: worker,
           actor: `act_runtime_${index}`,
