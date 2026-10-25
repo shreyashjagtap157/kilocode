@@ -66,13 +66,17 @@ export namespace SwarmRuntime {
     leaseMs?: number
     renewalIntervalMs?: number
     ownerId?: string
-    idempotencyKey?: string
   }
 
   /**
    * Create and execute a real Kilo child session from the declarative worker
    * plan. Permission derivation is performed by DynamicAgentFactory, while
    * Session.Service remains the single authority for child-session creation.
+   *
+   * This high-level operation intentionally has no idempotency-key parameter:
+   * there is a crash window between child-session creation and worker binding,
+   * so callers must use the lower-level durable task API when they require
+   * explicit retry/idempotency semantics.
    */
   export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
     const sessions = yield* Session.Service
@@ -93,7 +97,6 @@ export namespace SwarmRuntime {
       parentId: parent.id,
       actor: input.actor,
       corrId: input.corrId,
-      idemKey: input.idempotencyKey,
     })
 
     const child = yield* sessions.create({
