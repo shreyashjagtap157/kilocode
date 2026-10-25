@@ -7,9 +7,11 @@
 import { Effect, Schema } from "effect"
 import { sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
+import { EventV2 } from "@opencode-ai/core/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SwarmDispatcher } from "./dispatcher"
 import { SwarmState } from "./state"
+import { SwarmWorkerBound } from "./events"
 
 export namespace SwarmWorker {
   export class ExecutionConflict extends Schema.TaggedErrorClass<ExecutionConflict>()("SwarmWorker.ExecutionConflict", {
@@ -22,31 +24,61 @@ export namespace SwarmWorker {
     sessionId: string
     leaseId: string
     fence: number
+    corrId?: string
   }) {
     const { db } = yield* Database.Service
+    const events = yield* EventV2.Service
     const task = yield* SwarmState.getTask(input.taskId)
     yield* SwarmDispatcher.beforeExecution({
       taskId: input.taskId,
       leaseId: input.leaseId,
       fence: input.fence,
     })
+    const claim = yield* db.get<{ owner_id: string }>(sql`
+      SELECT owner_id FROM kilo_swarm_claim WHERE task_id = ${input.taskId} AND lease_id = ${input.leaseId} AND fence = ${input.fence} AND state = 'active'
+    `).pipe(Effect.orDie)
+    if (!claim) return yield* Effect.fail(new ExecutionConflict({ message: `active claim disappeared for ${input.taskId}` }))
+    const existing = yield* db.get<{ session_id: string; lease_id: string; fence: number }>(sql`
+      SELECT session_id, lease_id, fence FROM kilo_swarm_worker_binding WHERE task_id = ${input.taskId}
+    `).pipe(Effect.orDie)
+    if (existing && (existing.session_id !== input.sessionId || existing.lease_id !== input.leaseId || existing.fence !== input.fence)) {
+      return yield* Effect.fail(new ExecutionConflict({ message: `worker binding already belongs to another execution for ${input.taskId}` }))
+    }
     const now = Date.now()
-    yield* db.run(sql`
-      INSERT INTO kilo_swarm_worker_binding
-        (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-      SELECT ${input.taskId}, swarm_id, ${input.sessionId},
-             (SELECT owner_id FROM kilo_swarm_claim WHERE task_id = ${input.taskId}),
-             ${input.leaseId}, ${input.fence}, 'bound', ${now}, ${now}
-      FROM kilo_swarm_task
-      WHERE id = ${input.taskId} AND fence = ${input.fence} AND state = ${task.state}
-      ON CONFLICT(task_id) DO UPDATE SET
-        session_id = excluded.session_id,
-        owner_id = excluded.owner_id,
-        lease_id = excluded.lease_id,
-        fence = excluded.fence,
-        state = 'bound',
-        time_updated = excluded.time_updated
-    `)
+    yield* events.publish(
+      SwarmWorkerBound,
+      {
+        taskId: input.taskId as any,
+        swarmId: task.swarm_id,
+        sessionId: input.sessionId,
+        ownerId: claim.owner_id,
+        leaseId: input.leaseId,
+        fence: input.fence,
+        corrId: (input.corrId ?? "cor_swarm_bind") as any,
+      },
+      {
+        commit: () => Effect.gen(function* () {
+          const current = yield* db.get<{ fence: number; state: string; cancel_requested: number }>(sql`
+            SELECT fence, state, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
+          `)
+          if (!current || current.fence !== input.fence || current.state !== task.state || current.cancel_requested !== 0) {
+            return yield* Effect.die(new ExecutionConflict({ message: `task changed before worker binding commit: ${input.taskId}` }))
+          }
+          yield* db.run(sql`
+            INSERT INTO kilo_swarm_worker_binding
+              (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+            VALUES (${input.taskId}, ${task.swarm_id}, ${input.sessionId}, ${claim.owner_id}, ${input.leaseId}, ${input.fence}, 'bound', ${now}, ${now})
+            ON CONFLICT(task_id) DO UPDATE SET
+              session_id = excluded.session_id,
+              owner_id = excluded.owner_id,
+              lease_id = excluded.lease_id,
+              fence = excluded.fence,
+              state = 'bound',
+              time_updated = excluded.time_updated
+          `)
+        }).pipe(Effect.orDie),
+      },
+    )
     return { taskId: input.taskId, sessionId: input.sessionId, leaseId: input.leaseId, fence: input.fence }
   })
 
@@ -66,10 +98,7 @@ export namespace SwarmWorker {
     `).pipe(Effect.orDie)
   })
 
-  /**
-   * Resume an already-created Kilo session under a previously admitted swarm
-   * lease. Session execution remains in Kilo's existing stack.
-   */
+  /** Resume an already-created Kilo session under a previously admitted swarm lease. */
   export const resumeSession = Effect.fn("SwarmWorker.resumeSession")(function* (input: {
     taskId: string
     sessionId: string
@@ -85,51 +114,22 @@ export namespace SwarmWorker {
     }
     if (!existing) yield* bindSession(input)
 
-    yield* SwarmDispatcher.startExecution({
-      taskId: input.taskId,
-      leaseId: input.leaseId,
-      fence: input.fence,
-      actor: input.actor,
-      corrId: input.corrId,
-    })
-
+    yield* SwarmDispatcher.startExecution({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, actor: input.actor, corrId: input.corrId })
     const execution = yield* SessionExecution.Service
     yield* execution.resume(input.sessionId as any).pipe(
       Effect.catchAll((error) =>
         Effect.gen(function* () {
-          yield* SwarmDispatcher.assertCompletionOwnership({
-            taskId: input.taskId,
-            leaseId: input.leaseId,
-            fence: input.fence,
-          })
+          yield* SwarmDispatcher.assertCompletionOwnership({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
           const task = yield* SwarmState.getTask(input.taskId)
-          yield* SwarmState.transition({
-            taskId: input.taskId,
-            to: "failed",
-            expectedVersion: task.version,
-            actor: input.actor,
-            corrId: input.corrId,
-          })
+          yield* SwarmState.transition({ taskId: input.taskId, to: "failed", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
           return yield* Effect.fail(error)
         }),
       ),
     )
 
-    yield* SwarmDispatcher.assertCompletionOwnership({
-      taskId: input.taskId,
-      leaseId: input.leaseId,
-      fence: input.fence,
-    })
+    yield* SwarmDispatcher.assertCompletionOwnership({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
     const task = yield* SwarmState.getTask(input.taskId)
-    if (task.state !== "running") {
-      return yield* Effect.fail(new ExecutionConflict({ message: `task ${input.taskId} changed during execution (${task.state})` }))
-    }
-    return yield* SwarmState.transition({
-      taskId: input.taskId,
-      to: "reviewing",
-      expectedVersion: task.version,
-      actor: input.actor,
-      corrId: input.corrId,
-    })
+    if (task.state !== "running") return yield* Effect.fail(new ExecutionConflict({ message: `task ${input.taskId} changed during execution (${task.state})` }))
+    return yield* SwarmState.transition({ taskId: input.taskId, to: "reviewing", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
   })
 }
