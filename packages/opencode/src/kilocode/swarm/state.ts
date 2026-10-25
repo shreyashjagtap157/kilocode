@@ -43,6 +43,10 @@ export namespace SwarmState {
     message: Schema.String,
   }) {}
 
+  export class CancelConflict extends Schema.TaggedErrorClass<CancelConflict>()("SwarmState.CancelConflict", {
+    message: Schema.String,
+  }) {}
+
   // --- swarm -----------------------------------------------------------------
 
   export const createSwarm = Effect.fn("SwarmState.createSwarm")(function* (input: { maxWorkers?: number } = {}) {
@@ -224,26 +228,140 @@ export namespace SwarmState {
   }) {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
-    const task = yield* getTask(input.taskId)
-    if (TerminalStates.includes(task.state as any)) {
-      return { cancelRequested: true, alreadyTerminal: true }
+    const scope = input.idemKey ? "task.cancel:" + input.taskId : undefined
+    const resultType = {} as { cancelRequested: boolean; alreadyTerminal: boolean }
+
+    // Replays return the first committed result and must not publish another event.
+    if (scope) {
+      const existing = yield* db
+        .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
+        .pipe(Effect.orDie)
+      if (existing) return JSON.parse(existing.result) as typeof resultType
     }
+
+    const task = yield* getTask(input.taskId)
+    const completed = (alreadyTerminal: boolean) => ({ cancelRequested: true, alreadyTerminal })
+
+    // A repeated cancellation request is a no-op even if the caller uses a new
+    // key. Persist that key so a later retry replays the same logical result.
+    if (TerminalStates.includes(task.state as any) || task.cancel_requested !== 0) {
+      const result = completed(TerminalStates.includes(task.state as any))
+      if (scope) {
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
+          VALUES (${scope}, ${input.idemKey}, ${JSON.stringify(result)}, ${Date.now()})
+          ON CONFLICT(scope, key) DO NOTHING
+        `).pipe(Effect.orDie)
+        const existing = yield* db
+          .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
+          .pipe(Effect.orDie)
+        if (existing) return JSON.parse(existing.result) as typeof resultType
+      }
+      return result
+    }
+
     const now = Date.now()
-    yield* events
+    const outcome = yield* events
       .publish(
         SwarmTaskCancelRequested,
         { taskId: input.taskId as any, swarmId: task.swarm_id, corrId: input.corrId as any },
         {
           commit: () =>
             Effect.gen(function* () {
-              yield* db.run(sql`UPDATE kilo_swarm_task SET cancel_requested = 1, time_updated = ${now} WHERE id = ${input.taskId}`)
+              // The durable event and cancellation marker commit only if this
+              // exact preflight snapshot still wins the immediate transaction.
+              const current = yield* db.get<{
+                swarm_id: string
+                state: string
+                version: number
+                fence: number
+                cancel_requested: number
+              }>(sql`
+                SELECT swarm_id, state, version, fence, cancel_requested
+                FROM kilo_swarm_task WHERE id = ${input.taskId}
+              `)
+              if (
+                !current ||
+                current.swarm_id !== task.swarm_id ||
+                current.state !== task.state ||
+                current.version !== task.version ||
+                current.fence !== task.fence ||
+                current.cancel_requested !== task.cancel_requested ||
+                current.cancel_requested !== 0 ||
+                TerminalStates.includes(current.state as any)
+              ) {
+                return yield* Effect.die(new CancelConflict({
+                  message: "task " + input.taskId + " changed before cancellation commit; retry",
+                }))
+              }
+
+              const updated = yield* db.get<{ id: string }>(sql`
+                UPDATE kilo_swarm_task SET cancel_requested = 1, time_updated = ${Date.now()}
+                WHERE id = ${input.taskId} AND swarm_id = ${task.swarm_id}
+                  AND state = ${task.state} AND version = ${task.version}
+                  AND fence = ${task.fence} AND cancel_requested = 0
+                RETURNING id
+              `)
+              if (!updated) {
+                return yield* Effect.die(new CancelConflict({
+                  message: "cancellation CAS failed for task " + input.taskId + "; retry",
+                }))
+              }
+              if (scope) {
+                const result = completed(false)
+                yield* db.run(sql`
+                  INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
+                  VALUES (${scope}, ${input.idemKey}, ${JSON.stringify(result)}, ${now})
+                `)
+              }
             }).pipe(Effect.orDie),
         },
       )
-      .pipe(Effect.catchDefect((defect) => Effect.die(defect)))
-    return { cancelRequested: true, alreadyTerminal: false }
-  })
+      .pipe(
+        Effect.as(completed(false)),
+        Effect.catchDefect((defect) => {
+          if (!(defect instanceof CancelConflict)) return Effect.die(defect)
+          // A competing committed cancellation/terminal transition may have
+          // won after the preflight read. The failed EventV2 transaction has
+          // rolled back before this handler runs, so it is safe to inspect and
+          // return the winning result without emitting a duplicate event.
+          return Effect.gen(function* () {
+            if (scope) {
+              const existing = yield* db
+                .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
+                .pipe(Effect.orDie)
+              if (existing) return JSON.parse(existing.result) as typeof resultType
+            }
 
+            const current = yield* db.get<{ state: string; cancel_requested: number }>(sql`
+              SELECT state, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
+            `).pipe(Effect.orDie)
+            if (!current) return yield* Effect.die(defect)
+            if (current.cancel_requested === 0 && !TerminalStates.includes(current.state as any)) {
+              // The snapshot changed for another reason; do not mask a stale
+              // transition/fence conflict as successful cancellation.
+              return yield* Effect.die(defect)
+            }
+
+            const result = completed(TerminalStates.includes(current.state as any))
+            if (scope) {
+              yield* db.run(sql`
+                INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
+                VALUES (${scope}, ${input.idemKey}, ${JSON.stringify(result)}, ${Date.now()})
+                ON CONFLICT(scope, key) DO NOTHING
+              `).pipe(Effect.orDie)
+              const existing = yield* db
+                .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
+                .pipe(Effect.orDie)
+              if (existing) return JSON.parse(existing.result) as typeof resultType
+            }
+            return result
+          })
+        }),
+      )
+
+    return outcome
+  })
   export const listTasks = Effect.fn("SwarmState.listTasks")(function* (swarmId: string) {
     const { db } = yield* Database.Service
     const rows = yield* db
