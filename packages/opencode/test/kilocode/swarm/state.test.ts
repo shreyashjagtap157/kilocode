@@ -6,7 +6,7 @@ import { tmpdir } from "../../fixture/fixture"
 import { sql } from "drizzle-orm"
 import { Layer } from "effect"
 import { SwarmState } from "@/kilocode/swarm/state"
-import { SwarmTaskCancelRequested, SwarmTaskClaimed } from "@/kilocode/swarm/events"
+import { SwarmTaskCancelRequested, SwarmTaskClaimed, SwarmTaskTransitioned } from "@/kilocode/swarm/events"
 import { SwarmClaims } from "@/kilocode/swarm/claims"
 import { SwarmRecovery } from "@/kilocode/swarm/recovery"
 
@@ -369,6 +369,85 @@ describe("swarm state (M2)", () => {
           SELECT COUNT(*) AS count FROM event
           WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.cancel_requested%'
         `)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
+  test("transition refuses non-cancel state changes after cancellation is requested", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        yield* SwarmState.requestCancel({ taskId, actor: "act_test", corrId: "cor_cancel" as any })
+
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "reserved", expectedVersion: 0, actor: "act_test", corrId: "cor_transition" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("queued")
+        expect(task.cancel_requested).toBe(1)
+        const { db } = yield* Database.Service
+        const historyCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = \${taskId}\`)
+        const eventCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = \${taskId} AND type LIKE 'swarm.task.transitioned%'\`)
+        expect(historyCount?.count).toBe(0)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
+  test("transition to cancelled remains allowed after a cancellation request", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        yield* SwarmState.requestCancel({ taskId, actor: "act_test", corrId: "cor_cancel" as any })
+        const result = yield* SwarmState.transition({
+          taskId, to: "cancelled", expectedVersion: 0, actor: "act_test", corrId: "cor_transition" as any,
+        })
+        expect(result.version).toBe(1)
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("cancelled")
+        expect(task.cancel_requested).toBe(1)
+      }),
+      file,
+    )
+  })
+
+  test("transition rechecks cancellation marker inside the durable event transaction", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const { db } = yield* Database.Service
+        const events = yield* EventV2.Service
+
+        // Inject the cancellation marker inside EventV2's immediate transaction,
+        // after the preflight snapshot but before the transition CAS.
+        yield* events.project(SwarmTaskTransitioned, () =>
+          db.run(sql\`UPDATE kilo_swarm_task SET cancel_requested = 1 WHERE id = \${taskId}\`).pipe(Effect.asVoid, Effect.orDie),
+        )
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "reserved", expectedVersion: 0, actor: "act_test", corrId: "cor_race" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("queued")
+        expect(task.cancel_requested).toBe(0)
+        const historyCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = \${taskId}\`)
+        const eventCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = \${taskId} AND type LIKE 'swarm.task.transitioned%'\`)
+        expect(historyCount?.count).toBe(0)
         expect(eventCount?.count).toBe(0)
       }),
       file,

@@ -152,6 +152,9 @@ export namespace SwarmState {
     if (input.expectedVersion !== task.version) {
       return yield* Effect.fail(new VersionConflict({ message: `expected version ${input.expectedVersion}, got ${task.version}` }))
     }
+    if (task.cancel_requested !== 0 && input.to !== "cancelled") {
+      return yield* Effect.fail(new CancelConflict({ message: `task ${input.taskId} has a cancellation request and may only transition to cancelled` }))
+    }
 
     const now = Date.now()
     const nextVersion = task.version + 1
@@ -182,10 +185,18 @@ export namespace SwarmState {
             Effect.gen(function* () {
               // Revalidate the snapshot under EventV2's immediate transaction.
               // Claim acquisition also advances fence without changing task version.
-              const current = yield* db.get<{ state: string; version: number; fence: number }>(sql`
-                SELECT state, version, fence FROM kilo_swarm_task WHERE id = ${input.taskId}
+              const current = yield* db.get<{ state: string; version: number; fence: number; cancel_requested: number }>(sql`
+                SELECT state, version, fence, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
               `)
-              if (!current || current.state !== from || current.version !== task.version || current.fence !== task.fence || current.version !== input.expectedVersion) {
+              if (
+                !current ||
+                current.state !== from ||
+                current.version !== task.version ||
+                current.fence !== task.fence ||
+                current.version !== input.expectedVersion ||
+                current.cancel_requested !== task.cancel_requested ||
+                (current.cancel_requested !== 0 && input.to !== "cancelled")
+              ) {
                 return yield* Effect.die(new VersionConflict({ message: "CAS failed: task state, version, or fence changed" }))
               }
               const currentAllowed = (Lifecycle as any)[current.state] as string[] | undefined
@@ -196,6 +207,7 @@ export namespace SwarmState {
                 UPDATE kilo_swarm_task
                 SET state = ${input.to}, version = ${nextVersion}, time_updated = ${now}
                 WHERE id = ${input.taskId} AND version = ${task.version} AND state = ${from} AND fence = ${task.fence}
+                  AND cancel_requested = ${task.cancel_requested}
                 RETURNING id
               `)
               if (!updated) {
