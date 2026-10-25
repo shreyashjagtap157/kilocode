@@ -50,8 +50,6 @@ export namespace SwarmClaims {
       return yield* Effect.fail(new LeaseExpired({ message: `lease expiry is outside the supported integer range for ${input.taskId}` }))
     }
 
-    // Fast rejection only. The same predicate is rechecked inside the
-    // EventV2 BEGIN IMMEDIATE transaction, where it is authoritative.
     const existing = yield* db
       .get<{ owner_id: string; lease_id: string; fence: number; expires_at: number; state: string }>(
         sql`SELECT owner_id, lease_id, fence, expires_at, state FROM kilo_swarm_claim WHERE task_id = ${input.taskId}`
@@ -61,11 +59,11 @@ export namespace SwarmClaims {
       return yield* Effect.fail(new ClaimConflict({ message: `task ${input.taskId} already claimed by ${existing.owner_id}` }))
     }
 
-    // The event payload is built before the commit hook. The snapshot must still
-    // be current under the write lock or this event/state mutation rolls back.
+    // `leaseId` is the durable per-admission token. Keeping the returned token
+    // identical to the persisted lease identity avoids returning an unpersisted
+    // credential that could never be checked after a restart.
     const newFence = task.fence + 1
     const leaseId = `lease_${randomUUID()}`
-    const token = `lease_${randomUUID()}`
 
     yield* events.publish(
       SwarmTaskClaimed,
@@ -125,7 +123,7 @@ export namespace SwarmClaims {
       return Effect.die(defect)
     }))
 
-    return { ownerId: input.ownerId, leaseId, fence: newFence, expiresAt, token }
+    return { ownerId: input.ownerId, leaseId, fence: newFence, expiresAt, token: leaseId }
   })
 
   export const renew = Effect.fn("SwarmClaims.renew")(function* (input: {
@@ -145,10 +143,6 @@ export namespace SwarmClaims {
         if (!Number.isSafeInteger(expiresAt)) {
           return yield* Effect.fail(new LeaseExpired({ message: `lease expiry is outside the supported integer range for ${input.taskId}` }))
         }
-
-        // A lease cannot be extended after cancellation or task completion. Do
-        // this check under the same immediate transaction as both lease writes,
-        // and confirm the task still carries this fencing generation.
         const task = yield* tx.get<{ state: string; fence: number; cancel_requested: number }>(sql`
           SELECT state, fence, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
         `)
@@ -158,7 +152,6 @@ export namespace SwarmClaims {
         if (task.cancel_requested !== 0 || TerminalStates.includes(task.state as any)) {
           return yield* Effect.fail(new ClaimConflict({ message: `task ${input.taskId} has a cancellation request or is terminal; lease renewal rejected` }))
         }
-
         const updated = yield* tx.get<{ expires_at: number }>(sql`
           UPDATE kilo_swarm_claim SET expires_at = ${expiresAt}, time_updated = ${now}
           WHERE task_id = ${input.taskId} AND lease_id = ${input.leaseId} AND fence = ${input.fence}
@@ -240,14 +233,14 @@ export namespace SwarmClaims {
         sql`SELECT lease_id, fence, state, expires_at FROM kilo_swarm_claim WHERE task_id = ${input.taskId}`,
       )
       .pipe(Effect.orDie)
-    if (!claim) return yield* Effect.fail(new StaleFence({ message: `no claim for ${input.taskId}` }))
-    if (claim.lease_id !== input.leaseId) return yield* Effect.fail(new StaleFence({ message: `lease mismatch for ${input.taskId}` }))
-    if (claim.fence !== input.fence) return yield* Effect.fail(new StaleFence({ message: `stale fence for ${input.taskId}` }))
-    if (claim.state !== "active") return yield* Effect.fail(new StaleFence({ message: `claim not active for ${input.taskId}` }))
+    if (!claim || claim.lease_id !== input.leaseId || claim.fence !== input.fence || claim.state !== "active") {
+      return yield* Effect.fail(new StaleFence({ message: `stale fence/lease for ${input.taskId}` }))
+    }
     if (claim.expires_at <= now) return yield* Effect.fail(new LeaseExpired({ message: `lease expired for ${input.taskId}` }))
-    // also verify task fence matches
     const task = yield* SwarmState.getTask(input.taskId)
-    if (task.fence !== input.fence) return yield* Effect.fail(new StaleFence({ message: `task fence mismatch for ${input.taskId}` }))
-    return { ok: true as const }
+    if (task.fence !== input.fence || task.cancel_requested !== 0 || TerminalStates.includes(task.state as any)) {
+      return yield* Effect.fail(new StaleFence({ message: `task ownership is no longer valid for ${input.taskId}` }))
+    }
+    return { owned: true as const }
   })
 }
