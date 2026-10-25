@@ -49,7 +49,7 @@ const use = (effect: any, file: string, resume?: () => Effect.Effect<void>) => {
   const execution = resume
     ? Layer.succeed(SessionExecution.Service, {
         active: Effect.succeed(new Set()),
-        resume,
+        resume: () => resume(),
         wake: () => Effect.void,
         interrupt: () => Effect.void,
       })
@@ -120,12 +120,13 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         expect(maxActive).toBeGreaterThan(1)
       }),
       (tmp as any).path + "/swarm.db",
-      Effect.gen(function* () {
-        active += 1
-        maxActive = Math.max(maxActive, active)
-        yield* Effect.sleep("50 millis")
-        active -= 1
-      }).pipe(Effect.asVoid),
+      () =>
+        Effect.gen(function* () {
+          active += 1
+          maxActive = Math.max(maxActive, active)
+          yield* Effect.sleep("50 millis")
+          active -= 1
+        }).pipe(Effect.asVoid),
     )
   })
 })
