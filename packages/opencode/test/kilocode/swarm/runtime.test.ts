@@ -13,7 +13,6 @@ import { SwarmState } from "@/kilocode/swarm/state"
 import { tmpdir } from "../../fixture/fixture"
 
 const parentID = SessionID.make("ses_swarm_parent")
-const childID = SessionID.make("ses_swarm_child")
 
 const agent = (name: string, permission: Agent.Info["permission"], mode: Agent.Info["mode"] = "subagent"): Agent.Info => ({
   name,
@@ -36,16 +35,26 @@ const sessionInfo = (id: SessionID, permission: Session.Info["permission"]): Ses
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }) as Session.Info
 
-const use = (effect: any, file: string) => {
+const use = (effect: any, file: string, resume?: () => Effect.Effect<void>) => {
   const db = Database.layerFromPath(file)
   const ev = EventV2.layerWith().pipe(Layer.provide(db))
+  let childNumber = 0
   const sessions = Layer.succeed(Session.Service, {
     get: () => Effect.succeed(sessionInfo(parentID, Permission.fromConfig({ bash: "deny" }))),
-    create: () => Effect.succeed(sessionInfo(childID, Permission.fromConfig({ bash: "deny" }))),
+    create: () => {
+      childNumber += 1
+      return Effect.succeed(sessionInfo(SessionID.make(`ses_swarm_child_${childNumber}`), Permission.fromConfig({ bash: "deny" })))
+    },
   } as unknown as Session.Interface)
-  return Effect.runPromise(
-    Effect.provide(Layer.mergeAll(db, ev, SessionExecution.noopLayer, sessions))(Effect.scoped(effect)),
-  )
+  const execution = resume
+    ? Layer.succeed(SessionExecution.Service, {
+        active: Effect.succeed(new Set()),
+        resume,
+        wake: () => Effect.void,
+        interrupt: () => Effect.void,
+      })
+    : SessionExecution.noopLayer
+  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, execution, sessions))(Effect.scoped(effect)))
 }
 
 describe("SwarmRuntime planned worker path (M3)", () => {
@@ -75,6 +84,48 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         expect(task?.parent_id).toBe(parentID)
       }),
       (tmp as any).path + "/swarm.db",
+    )
+  })
+
+  test("runs specialized workers concurrently with an explicit bounded concurrency", async () => {
+    await using tmp = await tmpdir()
+    let active = 0
+    let maxActive = 0
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
+        const caller = agent("main", Permission.fromConfig({ read: "allow" }), "primary")
+        const worker = agent("worker", Permission.fromConfig({ read: "allow" }))
+        const workers = ["research", "implementation", "verification", "review"].map((description, index) => ({
+          swarmId,
+          parentSessionId: parentID,
+          description,
+          caller,
+          subagent: worker,
+          actor: `act_runtime_${index}`,
+          corrId: `cor_runtime_${index}` as any,
+          leaseMs: 5_000,
+          renewalIntervalMs: 1_000,
+        }))
+
+        yield* SwarmRuntime.runPlannedBatch({ workers, concurrency: 2 })
+
+        const { db } = yield* Database.Service
+        const rows = yield* db
+          .all<{ state: string }>(sql`SELECT state FROM kilo_swarm_task WHERE swarm_id = ${swarmId} ORDER BY time_created`)
+          .pipe(Effect.orDie)
+        expect(rows).toHaveLength(4)
+        expect(rows.every((row) => row.state === "reviewing")).toBe(true)
+        expect(maxActive).toBeLessThanOrEqual(2)
+        expect(maxActive).toBeGreaterThan(1)
+      }),
+      (tmp as any).path + "/swarm.db",
+      Effect.gen(function* () {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        yield* Effect.sleep("50 millis")
+        active -= 1
+      }).pipe(Effect.asVoid),
     )
   })
 })
