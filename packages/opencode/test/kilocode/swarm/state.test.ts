@@ -6,7 +6,7 @@ import { tmpdir } from "../../fixture/fixture"
 import { sql } from "drizzle-orm"
 import { Layer } from "effect"
 import { SwarmState } from "@/kilocode/swarm/state"
-import { SwarmTaskClaimed } from "@/kilocode/swarm/events"
+import { SwarmTaskCancelRequested, SwarmTaskClaimed } from "@/kilocode/swarm/events"
 import { SwarmClaims } from "@/kilocode/swarm/claims"
 import { SwarmRecovery } from "@/kilocode/swarm/recovery"
 
@@ -279,5 +279,99 @@ describe("swarm state (M2)", () => {
     )
     expect(states?.claim_state).toBe("expired")
     expect(states?.reservation_state).toBe("expired")
+  })
+
+  test("cancel request idempotency replays the original result and emits one event", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const first = yield* SwarmState.requestCancel({
+          taskId, actor: "act_test", corrId: "cor_cancel" as any, idemKey: "cancel-once",
+        })
+        const second = yield* SwarmState.requestCancel({
+          taskId, actor: "different-actor", corrId: "cor_retry" as any, idemKey: "cancel-once",
+        })
+        expect(first).toEqual({ cancelRequested: true, alreadyTerminal: false })
+        expect(second).toEqual(first)
+
+        const { db } = yield* Database.Service
+        const eventCount = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event
+          WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.cancel_requested%'
+        `)
+        const scope = "task.cancel:" + taskId
+        const idem = yield* db.get<{ result: string }>(sql`
+          SELECT result FROM kilo_swarm_idempotency
+          WHERE scope = ${scope} AND key = 'cancel-once'
+        `)
+        expect(eventCount?.count).toBe(1)
+        expect(idem?.result).toBe(JSON.stringify(first))
+      }),
+      file,
+    )
+  })
+
+  test("cancel request revalidates terminal state inside the durable event transaction", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const { db } = yield* Database.Service
+        const events = yield* EventV2.Service
+
+        // Simulate a terminal transition winning inside the same immediate
+        // transaction before the cancellation commit hook validates its CAS.
+        yield* events.project(SwarmTaskCancelRequested, () =>
+          db.run(sql`
+            UPDATE kilo_swarm_task SET state = 'cancelled', version = version + 1
+            WHERE id = ${taskId}
+          `).pipe(Effect.asVoid, Effect.orDie),
+        )
+        const attempt = yield* Effect.exit(SwarmState.requestCancel({
+          taskId, actor: "act_test", corrId: "cor_race" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("queued")
+        expect(task.cancel_requested).toBe(0)
+        const eventCount = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event
+          WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.cancel_requested%'
+        `)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
+  test("cancel request after a terminal transition is a no-op", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        yield* SwarmState.transition({
+          taskId, to: "cancelled", expectedVersion: 0, actor: "act_test", corrId: "cor_transition" as any,
+        })
+        const result = yield* SwarmState.requestCancel({
+          taskId, actor: "act_test", corrId: "cor_cancel" as any, idemKey: "cancel-terminal",
+        })
+        expect(result).toEqual({ cancelRequested: true, alreadyTerminal: true })
+        const { db } = yield* Database.Service
+        const eventCount = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event
+          WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.cancel_requested%'
+        `)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
   })
 })
