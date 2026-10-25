@@ -29,8 +29,7 @@ export const migrations = (
     import("./migration/20260602182828_add_project_directories"),
     import("./migration/20260603001617_session_message_projection_indexes"),
     import("./migration/20260603040000_session_message_projection_order"),
-    import("./migration/20260603141458_session_input_inbox"),
-    import("./migration/20260603160727_jittery_ezekiel_stane"),
+    import("./migration/20260603141458_jittery_ezekiel_stane"),
     import("./migration/20260604172448_event_sourced_session_input"),
     import("./migration/20260605003541_add_session_context_snapshot"),
     import("./migration/20260605042240_add_context_epoch_agent"),
@@ -46,5 +45,6 @@ export const migrations = (
     import("./migration/20260907102000_kilocode_model_usage_index"), // kilocode_change
     import("./migration/20261018105650_kilocode_swarm"),
     import("./migration/20261024210000_kilocode_swarm_atomic_admission"),
+    import("./migration/202610260001_swarm_worker_binding"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]
