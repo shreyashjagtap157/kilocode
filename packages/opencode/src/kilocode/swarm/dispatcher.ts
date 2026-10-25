@@ -1,9 +1,8 @@
 // Kilo Swarm M3 — durable dispatch admission boundary.
 //
-// This module deliberately separates durable admission from provider execution.
-// The caller owns the actual worker invocation and must keep the returned fence
-// and lease identity attached to every completion/update. A worker that loses
-// ownership must never commit a result.
+// This module separates durable admission from provider execution. The caller
+// owns the actual worker invocation and must keep the returned lease identity
+// and fence attached to every lifecycle update and completion.
 import { Effect, Schema } from "effect"
 import { SwarmClaims } from "./claims"
 import { SwarmState } from "./state"
@@ -23,19 +22,6 @@ export namespace SwarmDispatcher {
     corrId: string
   }
 
-  /**
-   * Admit exactly one queued task to one worker.
-   *
-   * Ordering is intentional:
-   *   1. durable claim/fence admission;
-   *   2. queued -> reserved;
-   *   3. reserved -> dispatched.
-   *
-   * If the process dies between these operations, no provider invocation has
-   * been started by this module. The durable claim can expire and recovery can
-   * reconcile it without inventing a result. Execution must only begin after
-   * this method returns successfully.
-   */
   export const admit = Effect.fn("SwarmDispatcher.admit")(function* (input: {
     taskId: string
     ownerId: string
@@ -49,7 +35,6 @@ export namespace SwarmDispatcher {
     }
 
     const claim = yield* SwarmClaims.claim(input)
-
     try {
       const reserved = yield* SwarmState.transition({
         taskId: input.taskId,
@@ -58,7 +43,6 @@ export namespace SwarmDispatcher {
         actor: input.actor,
         corrId: input.corrId,
       })
-
       const dispatched = yield* SwarmState.transition({
         taskId: input.taskId,
         to: "dispatched",
@@ -66,7 +50,6 @@ export namespace SwarmDispatcher {
         actor: input.actor,
         corrId: input.corrId,
       })
-
       return {
         taskId: input.taskId,
         swarmId: task.swarm_id,
@@ -78,8 +61,6 @@ export namespace SwarmDispatcher {
         version: dispatched.version,
       }
     } catch (error) {
-      // No provider execution has started. Release the durable claim so a retry
-      // can safely re-admit the task. The release itself is fenced.
       yield* SwarmClaims.release({
         taskId: input.taskId,
         leaseId: claim.leaseId,
@@ -90,6 +71,28 @@ export namespace SwarmDispatcher {
     }
   })
 
+  /** Revalidate ownership and atomically advance dispatched -> running. */
+  export const startExecution = Effect.fn("SwarmDispatcher.startExecution")(function* (input: {
+    taskId: string
+    leaseId: string
+    fence: number
+    actor: string
+    corrId: string
+  }) {
+    yield* SwarmClaims.assertOwnership(input)
+    const task = yield* SwarmState.getTask(input.taskId)
+    if (task.state !== "dispatched") {
+      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} is not dispatched (${task.state})` }))
+    }
+    return yield* SwarmState.transition({
+      taskId: input.taskId,
+      to: "running",
+      expectedVersion: task.version,
+      actor: input.actor,
+      corrId: input.corrId,
+    })
+  })
+
   /** Check durable ownership immediately before provider execution begins. */
   export const beforeExecution = Effect.fn("SwarmDispatcher.beforeExecution")(function* (input: {
     taskId: string
@@ -97,17 +100,14 @@ export namespace SwarmDispatcher {
     fence: number
   }) {
     const task = yield* SwarmState.getTask(input.taskId)
-    if (task.state !== "dispatched") {
-      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} is not dispatched (${task.state})` }))
+    if (task.state !== "dispatched" && task.state !== "running") {
+      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} is not executable (${task.state})` }))
     }
     yield* SwarmClaims.assertOwnership(input)
     return task
   })
 
-  /**
-   * Fenced completion gate. Callers must invoke this before persisting any
-   * worker result. Provider output is never treated as ownership authority.
-   */
+  /** Fenced completion gate. Provider output never grants ownership. */
   export const assertCompletionOwnership = Effect.fn("SwarmDispatcher.assertCompletionOwnership")(function* (input: {
     taskId: string
     leaseId: string
@@ -115,8 +115,8 @@ export namespace SwarmDispatcher {
   }) {
     yield* SwarmClaims.assertOwnership(input)
     const task = yield* SwarmState.getTask(input.taskId)
-    if (task.state === "cancelled" || task.cancel_requested !== 0) {
-      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} was cancelled` }))
+    if (task.state !== "running" || task.cancel_requested !== 0) {
+      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} is not completable (${task.state})` }))
     }
     return task
   })
