@@ -20,6 +20,38 @@ type TX = Parameters<Parameters<DB["transaction"]>[0]>[0]
 export namespace SwarmState {
   // --- helpers ---------------------------------------------------------------
 
+  const IDempotencyEnvelopeMarker = "__kiloSwarmIdempotencyV1" as const
+
+  const encodeIdempotencyResult = <T>(request: unknown, result: T) =>
+    JSON.stringify({
+      [IDempotencyEnvelopeMarker]: true,
+      request: JSON.stringify(request),
+      result,
+    })
+
+  const decodeIdempotencyResult = <T>(stored: string, request: unknown): { result: T; conflict: boolean } => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(stored)
+    } catch {
+      // Backward compatibility: task.create historically stored a raw task ID.
+      return { result: stored as T, conflict: false }
+    }
+
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)[IDempotencyEnvelopeMarker] === true
+    ) {
+      const envelope = parsed as { request: string; result: T }
+      return { result: envelope.result, conflict: envelope.request !== JSON.stringify(request) }
+    }
+
+    // Old transition/cancellation rows stored their result directly, without
+    // the request payload. Preserve replay behavior for those pre-versioned rows.
+    return { result: parsed as T, conflict: false }
+  }
+
   export const newSwarmId = () => `swm_${randomUUID()}`
   export const newTaskId = () => `tsk_${randomUUID()}`
 
@@ -72,13 +104,20 @@ export namespace SwarmState {
   }) {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
+    const idempotencyRequest = { swarmId: input.swarmId, parentId: input.parentId ?? null }
 
-    // idempotency pre-check
+    // Idempotency keys replay only the same logical create request.
     if (input.idemKey) {
       const existing = yield* db
         .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = 'task.create' AND key = ${input.idemKey}`)
         .pipe(Effect.orDie)
-      if (existing) return existing.result
+      if (existing) {
+        const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest)
+        if (replay.conflict) {
+          return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.create payload" }))
+        }
+        return replay.result
+      }
     }
 
     const taskId = newTaskId()
@@ -98,13 +137,29 @@ export namespace SwarmState {
               if (input.idemKey) {
                 yield* db.run(sql`
                   INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
-                  VALUES ('task.create', ${input.idemKey}, ${taskId}, ${now})
+                  VALUES ('task.create', ${input.idemKey}, ${encodeIdempotencyResult(idempotencyRequest, taskId)}, ${now})
                 `)
               }
             }).pipe(Effect.orDie),
         },
       )
-      .pipe(Effect.catchDefect((defect) => Effect.die(defect)))
+      .pipe(
+        Effect.catchDefect((defect) => {
+          if (!input.idemKey) return Effect.die(defect)
+          return Effect.gen(function* () {
+            // A concurrent caller with the same key may have committed first.
+            const existing = yield* db
+              .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = 'task.create' AND key = ${input.idemKey}`)
+              .pipe(Effect.orDie)
+            if (!existing) return yield* Effect.die(defect)
+            const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest)
+            if (replay.conflict) {
+              return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.create payload" }))
+            }
+            return replay.result
+          })
+        }),
+      )
 
     return taskId
   })
@@ -132,14 +187,21 @@ export namespace SwarmState {
   }) {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
+    const scope = input.idemKey ? `task.transition:${input.taskId}` : undefined
+    const idempotencyRequest = { to: input.to, expectedVersion: input.expectedVersion }
 
-    // idempotency pre-check
-    if (input.idemKey) {
-      const scope = `task.transition:${input.taskId}`
+    // Idempotency keys replay only the same logical lifecycle transition.
+    if (scope) {
       const existing = yield* db
         .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
         .pipe(Effect.orDie)
-      if (existing) return JSON.parse(existing.result) as { version: number }
+      if (existing) {
+        const replay = decodeIdempotencyResult<{ version: number }>(existing.result, idempotencyRequest)
+        if (replay.conflict) {
+          return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.transition payload" }))
+        }
+        return replay.result
+      }
     }
 
     const task = yield* getTask(input.taskId)
@@ -161,8 +223,6 @@ export namespace SwarmState {
     const seq = (yield* db
       .get<{ c: number }>(sql`SELECT COUNT(*) AS c FROM kilo_swarm_task_transition WHERE task_id = ${input.taskId}`)
       .pipe(Effect.orDie))?.c ?? 0
-
-    const scope = input.idemKey ? `task.transition:${input.taskId}` : undefined
 
     yield* events
       .publish(
@@ -220,14 +280,31 @@ export namespace SwarmState {
               if (input.idemKey && scope) {
                 yield* db.run(sql`
                   INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
-                  VALUES (${scope}, ${input.idemKey}, ${JSON.stringify({ version: nextVersion })}, ${now})
+                  VALUES (${scope}, ${input.idemKey}, ${encodeIdempotencyResult(idempotencyRequest, { version: nextVersion })}, ${now})
                 `)
               }
               void eventSeq
             }).pipe(Effect.orDie),
         },
       )
-      .pipe(Effect.catchDefect((defect) => Effect.die(defect)))
+      .pipe(
+        Effect.catchDefect((defect) => {
+          if (!scope) return Effect.die(defect)
+          return Effect.gen(function* () {
+            // If another request with the same key committed first, replay its
+            // result after our losing transaction has rolled back.
+            const existing = yield* db
+              .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
+              .pipe(Effect.orDie)
+            if (!existing) return yield* Effect.die(defect)
+            const replay = decodeIdempotencyResult<{ version: number }>(existing.result, idempotencyRequest)
+            if (replay.conflict) {
+              return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.transition payload" }))
+            }
+            return replay.result
+          })
+        }),
+      )
 
     return { version: nextVersion }
   })

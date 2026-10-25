@@ -123,24 +123,65 @@ describe("swarm state (M2)", () => {
     )
   })
 
-  test("idempotency: duplicate create returns same id", async () => {
+  test("idempotency: duplicate create returns same id for the same payload", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
-    const t1 = await use(
-      Effect.gen(function* () {
-        const swarmId = yield* SwarmState.createSwarm()
-        return yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any, idemKey: "k1" })
-      }),
-      file,
-    )
-    const t2 = await use(
-      Effect.gen(function* () {
-        const swarmId = yield* SwarmState.createSwarm()
-        return yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any, idemKey: "k1" })
-      }),
-      file,
-    )
+    const swarmId = await use(SwarmState.createSwarm(), file)
+    const request = { swarmId, actor: "act_test", corrId: "cor_test" as any, idemKey: "k1" }
+    const t1 = await use(SwarmState.createTask(request), file)
+    const t2 = await use(SwarmState.createTask(request), file)
     expect(t1).toBe(t2)
+  })
+
+  test("idempotency: duplicate create rejects a different payload", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    const [swarmA, swarmB] = await use(
+      Effect.gen(function* () {
+        return [yield* SwarmState.createSwarm(), yield* SwarmState.createSwarm()] as const
+      }),
+      file,
+    )
+    const first = await use(SwarmState.createTask({
+      swarmId: swarmA, actor: "act_test", corrId: "cor_first" as any, idemKey: "create-conflict",
+    }), file)
+    const duplicate = await use(Effect.exit(SwarmState.createTask({
+      swarmId: swarmB, actor: "act_test", corrId: "cor_second" as any, idemKey: "create-conflict",
+    })), file)
+    expect(duplicate._tag).toBe("Failure")
+    const tasks = await use(SwarmState.listTasks(swarmA), file)
+    expect(tasks.map((task: any) => task.id)).toContain(first)
+    expect(tasks.length).toBe(1)
+  })
+
+  test("idempotency: duplicate transition rejects a different payload", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const first = yield* SwarmState.transition({
+          taskId, to: "reserved", expectedVersion: 0, actor: "act_test", corrId: "cor_first" as any, idemKey: "transition-conflict",
+        })
+        const replay = yield* SwarmState.transition({
+          taskId, to: "reserved", expectedVersion: 0, actor: "another-actor", corrId: "cor_replay" as any, idemKey: "transition-conflict",
+        })
+        expect(replay).toEqual(first)
+        const conflict = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "cancelled", expectedVersion: 1, actor: "act_test", corrId: "cor_conflict" as any, idemKey: "transition-conflict",
+        }))
+        expect(conflict._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("reserved")
+        const { db } = yield* Database.Service
+        const historyCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = ${taskId}`)
+        const eventCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.transitioned%'`)
+        expect(historyCount?.count).toBe(1)
+        expect(eventCount?.count).toBe(1)
+      }),
+      file,
+    )
   })
 
   test("survives close/reopen (persistence)", async () => {
