@@ -5,6 +5,8 @@
 // Kilo's existing session stack. Swarm owns admission, fencing, lifecycle, and
 // stale-worker protection around that execution.
 import { Effect, Schema } from "effect"
+import { sql } from "drizzle-orm"
+import { Database } from "@opencode-ai/core/database/database"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SwarmDispatcher } from "./dispatcher"
 import { SwarmState } from "./state"
@@ -14,14 +16,59 @@ export namespace SwarmWorker {
     message: Schema.String,
   }) {}
 
+  /** Persist the task/session relationship under the current lease fence. */
+  export const bindSession = Effect.fn("SwarmWorker.bindSession")(function* (input: {
+    taskId: string
+    sessionId: string
+    leaseId: string
+    fence: number
+  }) {
+    const { db } = yield* Database.Service
+    const task = yield* SwarmState.getTask(input.taskId)
+    yield* SwarmDispatcher.beforeExecution({
+      taskId: input.taskId,
+      leaseId: input.leaseId,
+      fence: input.fence,
+    })
+    const now = Date.now()
+    yield* db.run(sql`
+      INSERT INTO kilo_swarm_worker_binding
+        (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+      SELECT ${input.taskId}, swarm_id, ${input.sessionId},
+             (SELECT owner_id FROM kilo_swarm_claim WHERE task_id = ${input.taskId}),
+             ${input.leaseId}, ${input.fence}, 'bound', ${now}, ${now}
+      FROM kilo_swarm_task
+      WHERE id = ${input.taskId} AND fence = ${input.fence} AND state = ${task.state}
+      ON CONFLICT(task_id) DO UPDATE SET
+        session_id = excluded.session_id,
+        owner_id = excluded.owner_id,
+        lease_id = excluded.lease_id,
+        fence = excluded.fence,
+        state = 'bound',
+        time_updated = excluded.time_updated
+    `)
+    return { taskId: input.taskId, sessionId: input.sessionId, leaseId: input.leaseId, fence: input.fence }
+  })
+
+  export const getBinding = Effect.fn("SwarmWorker.getBinding")(function* (taskId: string) {
+    const { db } = yield* Database.Service
+    return yield* db.get<{
+      task_id: string
+      swarm_id: string
+      session_id: string
+      owner_id: string
+      lease_id: string
+      fence: number
+      state: string
+    }>(sql`
+      SELECT task_id, swarm_id, session_id, owner_id, lease_id, fence, state
+      FROM kilo_swarm_worker_binding WHERE task_id = ${taskId}
+    `).pipe(Effect.orDie)
+  })
+
   /**
    * Resume an already-created Kilo session under a previously admitted swarm
-   * lease. Session creation, provider selection, permissions, and tool
-   * execution remain in Kilo's existing session stack.
-   *
-   * A session ID is required from the caller because M3 does not yet invent a
-   * durable task-payload/session mapping. This keeps the bridge honest instead
-   * of guessing which session a task should execute.
+   * lease. Session execution remains in Kilo's existing stack.
    */
   export const resumeSession = Effect.fn("SwarmWorker.resumeSession")(function* (input: {
     taskId: string
@@ -31,12 +78,8 @@ export namespace SwarmWorker {
     actor: string
     corrId: string
   }) {
-    yield* SwarmDispatcher.beforeExecution({
-      taskId: input.taskId,
-      leaseId: input.leaseId,
-      fence: input.fence,
-    })
-
+    yield* SwarmDispatcher.beforeExecution({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
+    yield* bindSession(input)
     yield* SwarmDispatcher.startExecution({
       taskId: input.taskId,
       leaseId: input.leaseId,
@@ -49,7 +92,6 @@ export namespace SwarmWorker {
     yield* execution.resume(input.sessionId as any).pipe(
       Effect.catchAll((error) =>
         Effect.gen(function* () {
-          // Failure is committed only while this worker still owns the fence.
           yield* SwarmDispatcher.assertCompletionOwnership({
             taskId: input.taskId,
             leaseId: input.leaseId,
@@ -68,8 +110,6 @@ export namespace SwarmWorker {
       ),
     )
 
-    // A successful SessionExecution is only allowed to publish the next swarm
-    // lifecycle state while the same lease/fence remains authoritative.
     yield* SwarmDispatcher.assertCompletionOwnership({
       taskId: input.taskId,
       leaseId: input.leaseId,
