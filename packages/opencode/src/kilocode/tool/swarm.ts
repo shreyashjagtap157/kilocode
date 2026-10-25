@@ -9,8 +9,8 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionPrompt } from "@/session/prompt"
 import { SwarmRuntime } from "@/kilocode/swarm/runtime"
+import { SwarmState } from "@/kilocode/swarm/state"
 import { KiloTask } from "@/kilocode/tool/task"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const id = "swarm"
 
@@ -24,7 +24,7 @@ export const Parameters = Schema.Struct({
   workers: Schema.Array(Worker).annotate({
     description: "Independent specialized workers. Use different roles when the work benefits from parallel perspectives.",
   }),
-  max_workers: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1))).annotate({
+  max_workers: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))).annotate({
     description: "Maximum number of workers executing concurrently. Defaults to 4.",
   }),
 })
@@ -48,7 +48,6 @@ export const SwarmTool = Tool.define(
     const events = yield* EventV2.Service
     const execution = yield* SessionExecution.Service
     const prompt = yield* SessionPrompt.Service
-    const flags = yield* RuntimeFlags.Service
 
     const run = Effect.fn("SwarmTool.execute")(function* (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) {
       if (params.workers.length === 0) return { title: "Swarm", output: "No workers were provided." }
@@ -57,20 +56,21 @@ export const SwarmTool = Tool.define(
       const cfg = yield* config.get()
       const parent = yield* sessions.get(ctx.sessionID)
       const caller = yield* agents.get(ctx.agent)
-      const depth = (() => {
-        let current = parent
-        let count = 0
-        while (current.parentID) {
-          count += 1
-          // The ancestry is resolved below through the Effect service rather than
-          // synchronously; this placeholder is replaced by the bounded loop.
-          break
-        }
-        return count
-      })()
-      void flags
+      let depth = 0
+      let current = parent
+      while (current.parentID) {
+        const next = yield* sessions.get(current.parentID).pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
+        if (!next) break
+        depth += 1
+        current = next
+      }
+      if (depth >= (cfg.subagent_depth ?? 1)) {
+        return yield* Effect.fail(
+          new Error(`Subagent depth limit reached (${cfg.subagent_depth ?? 1}). Increase "subagent_depth" to allow nested swarm workers.`),
+        )
+      }
 
-      const workerPlans = [] as SwarmRuntime.PlannedInput[]
+      const workerPlans: SwarmRuntime.PlannedInput[] = []
       for (const [index, worker] of params.workers.entries()) {
         yield* ctx.ask({
           permission: "task",
@@ -79,7 +79,6 @@ export const SwarmTool = Tool.define(
           metadata: { description: worker.description, subagent_type: worker.subagent_type, swarm: true },
         })
         const subagent = yield* agents.get(worker.subagent_type)
-        if (!subagent) return yield* Effect.fail(new Error(`Unknown agent type: ${worker.subagent_type}`))
         KiloTask.validate(subagent, worker.subagent_type)
         workerPlans.push({
           swarmId: "",
@@ -98,13 +97,7 @@ export const SwarmTool = Tool.define(
       }
 
       const maxWorkers = Math.min(params.max_workers ?? 4, workerPlans.length)
-      const swarmId = yield* Effect.gen(function* () {
-        // SwarmState is intentionally used through the runtime's durable state
-        // API; createSwarm is kept separate so the admission boundary remains
-        // authoritative.
-        const { SwarmState } = yield* Effect.promise(() => import("@/kilocode/swarm/state"))
-        return yield* SwarmState.createSwarm({ maxWorkers })
-      })
+      const swarmId = yield* SwarmState.createSwarm({ maxWorkers })
       const workers = workerPlans.map((worker) => ({ ...worker, swarmId }))
 
       const results = yield* SwarmRuntime.runPlannedBatch({ workers, concurrency: maxWorkers }).pipe(
