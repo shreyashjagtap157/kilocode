@@ -154,6 +154,36 @@ describe("swarm state (M2)", () => {
     expect(tasks.length).toBe(1)
   })
 
+  test("idempotency: malformed transition replay data fails closed", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_test" as any })
+        const { db } = yield* Database.Service
+        const scope = `task.transition:${taskId}`
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
+          VALUES (${scope}, 'broken-transition', 'not-json', ${Date.now()})
+        `)
+
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "reserved", expectedVersion: 0, actor: "act_test",
+          corrId: "cor_transition" as any, idemKey: "broken-transition",
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("queued")
+        const historyCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = ${taskId}`)
+        const eventCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.transitioned%'`)
+        expect(historyCount?.count).toBe(0)
+        expect(eventCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
   test("idempotency: duplicate transition rejects a different payload", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)

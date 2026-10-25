@@ -29,13 +29,19 @@ export namespace SwarmState {
       result,
     })
 
-  const decodeIdempotencyResult = <T>(stored: string, request: unknown): { result: T; conflict: boolean } => {
+  const decodeIdempotencyResult = <T>(
+    stored: string,
+    request: unknown,
+    allowLegacyRawString = false,
+  ): { result: T; conflict: boolean; malformed: boolean } => {
     let parsed: unknown
     try {
       parsed = JSON.parse(stored)
     } catch {
-      // Backward compatibility: task.create historically stored a raw task ID.
-      return { result: stored as T, conflict: false }
+      // Only legacy task.create rows stored the task ID as an unquoted raw string.
+      return allowLegacyRawString
+        ? { result: stored as T, conflict: false, malformed: false }
+        : { result: undefined as T, conflict: false, malformed: true }
     }
 
     if (
@@ -43,13 +49,16 @@ export namespace SwarmState {
       parsed !== null &&
       (parsed as Record<string, unknown>)[IDempotencyEnvelopeMarker] === true
     ) {
-      const envelope = parsed as { request: string; result: T }
-      return { result: envelope.result, conflict: envelope.request !== JSON.stringify(request) }
+      const envelope = parsed as { request?: unknown; result?: T }
+      if (typeof envelope.request !== "string" || !Object.prototype.hasOwnProperty.call(parsed, "result")) {
+        return { result: undefined as T, conflict: false, malformed: true }
+      }
+      return { result: envelope.result as T, conflict: envelope.request !== JSON.stringify(request), malformed: false }
     }
 
-    // Old transition/cancellation rows stored their result directly, without
+    // Old transition/cancellation rows stored their JSON result directly, without
     // the request payload. Preserve replay behavior for those pre-versioned rows.
-    return { result: parsed as T, conflict: false }
+    return { result: parsed as T, conflict: false, malformed: false }
   }
 
   export const newSwarmId = () => `swm_${randomUUID()}`
@@ -112,7 +121,10 @@ export namespace SwarmState {
         .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = 'task.create' AND key = ${input.idemKey}`)
         .pipe(Effect.orDie)
       if (existing) {
-        const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest)
+        const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest, true)
+        if (replay.malformed) {
+          return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.create idempotency result is malformed" }))
+        }
         if (replay.conflict) {
           return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.create payload" }))
         }
@@ -152,7 +164,10 @@ export namespace SwarmState {
               .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = 'task.create' AND key = ${input.idemKey}`)
               .pipe(Effect.orDie)
             if (!existing) return yield* Effect.die(defect)
-            const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest)
+            const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest, true)
+            if (replay.malformed) {
+              return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.create idempotency result is malformed" }))
+            }
             if (replay.conflict) {
               return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.create payload" }))
             }
@@ -197,6 +212,9 @@ export namespace SwarmState {
         .pipe(Effect.orDie)
       if (existing) {
         const replay = decodeIdempotencyResult<{ version: number }>(existing.result, idempotencyRequest)
+        if (replay.malformed || !replay.result || !Number.isSafeInteger(replay.result.version) || replay.result.version < 1) {
+          return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.transition idempotency result is malformed" }))
+        }
         if (replay.conflict) {
           return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.transition payload" }))
         }
@@ -298,6 +316,9 @@ export namespace SwarmState {
               .pipe(Effect.orDie)
             if (!existing) return yield* Effect.die(defect)
             const replay = decodeIdempotencyResult<{ version: number }>(existing.result, idempotencyRequest)
+            if (replay.malformed || !replay.result || !Number.isSafeInteger(replay.result.version) || replay.result.version < 1) {
+              return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.transition idempotency result is malformed" }))
+            }
             if (replay.conflict) {
               return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.transition payload" }))
             }
