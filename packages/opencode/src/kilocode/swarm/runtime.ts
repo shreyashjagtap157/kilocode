@@ -6,7 +6,8 @@
 import { Effect, Schema } from "effect"
 import { randomUUID } from "node:crypto"
 import { Session } from "@/session/session"
-import { SessionID } from "@/session/schema"
+import { SessionPrompt } from "@/session/prompt"
+import { SessionID, MessageID } from "@/session/schema"
 import type { Agent } from "@/agent/agent"
 import type { Config } from "@/config/config"
 import { SwarmDispatcher } from "./dispatcher"
@@ -56,6 +57,7 @@ export namespace SwarmRuntime {
     swarmId: string
     parentSessionId: SessionID
     description: string
+    prompt: string
     caller: Agent.Info
     subagent: Agent.Info
     actor: string
@@ -69,9 +71,10 @@ export namespace SwarmRuntime {
   }
 
   /**
-   * Create and execute a real Kilo child session from the declarative worker
-   * plan. Permission derivation is performed by DynamicAgentFactory, while
-   * Session.Service remains the single authority for child-session creation.
+   * Create, prompt, and execute a real Kilo child session from the declarative
+   * worker plan. Permission derivation is performed by DynamicAgentFactory;
+   * Session.Service and SessionPrompt.Service remain the authorities for Kilo
+   * session creation and prompt/execution semantics.
    *
    * This high-level operation intentionally has no idempotency-key parameter:
    * there is a crash window between child-session creation and worker binding,
@@ -80,6 +83,7 @@ export namespace SwarmRuntime {
    */
   export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
     const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
     const parent = yield* sessions.get(input.parentSessionId)
     const plan = DynamicAgentFactory.plan({
       parentID: parent.id,
@@ -126,6 +130,25 @@ export namespace SwarmRuntime {
       corrId: input.corrId,
     })
 
+    const model = child.model ?? parent.model
+    if (!model) return yield* Effect.fail(new InvalidInput({ message: `no model available for worker ${child.id}` }))
+
+    const prepare = prompt
+      .prompt({
+        messageID: MessageID.ascending(),
+        sessionID: child.id,
+        model: { modelID: model.id, providerID: model.providerID },
+        variant: model.variant,
+        agent: plan.agent,
+        tools: {
+          question: false,
+          ...(plan.canTodo ? {} : { todowrite: false }),
+          ...(plan.canTask ? {} : { task: false }),
+        },
+        parts: [{ type: "text", text: input.prompt }],
+      })
+      .pipe(Effect.asVoid)
+
     return yield* SwarmWorker.resumeSession({
       taskId,
       sessionId: child.id,
@@ -135,6 +158,7 @@ export namespace SwarmRuntime {
       corrId: input.corrId,
       leaseMs: input.leaseMs,
       renewalIntervalMs: input.renewalIntervalMs,
+      prepare,
     })
   })
 
