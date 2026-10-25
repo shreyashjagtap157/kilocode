@@ -1,15 +1,12 @@
-// Kilo Swarm M2 — durable EventV2 definitions + Kilo-owned manifest (Kilo-owned).
+// Kilo Swarm M2/M3 — durable EventV2 definitions + Kilo-owned manifest.
 //
-// EventV2 is the canonical durable event mechanism (M2 design addendum §3).
-// Swarm durable events are defined here (Kilo-owned; no shared-manifest edit
-// required for M2). Read/replay uses EventV2.readAggregate with the Kilo-owned
-// SwarmDurable manifest. The shared @opencode-ai/schema manifest is NOT touched.
-import { Effect, Schema } from "effect"
+// EventV2 is the canonical durable event mechanism. Worker binding events are
+// deliberately emitted only at successful persistence boundaries so replay does
+// not imply that a provider invocation actually ran.
+import { Schema } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Event } from "@opencode-ai/schema/event"
 import { SwarmTaskID, TaskState, CorrelationID } from "./schema"
-
-// --- durable event definitions ---------------------------------------------
 
 export const SwarmTaskCreated = EventV2.define({
   type: "swarm.task.created",
@@ -77,15 +74,28 @@ export const SwarmTaskCancelRequested = EventV2.define({
   },
 })
 
+export const SwarmWorkerBound = EventV2.define({
+  type: "swarm.worker.bound",
+  durable: { version: 1, aggregate: "taskId" },
+  schema: {
+    taskId: SwarmTaskID,
+    swarmId: Schema.String,
+    sessionId: Schema.String,
+    ownerId: Schema.String,
+    leaseId: Schema.String,
+    fence: Schema.Int,
+    corrId: CorrelationID,
+  },
+})
+
 export const SwarmTaskDefinitions = [
   SwarmTaskCreated,
   SwarmTaskTransitioned,
   SwarmTaskClaimed,
   SwarmTaskReleased,
   SwarmTaskCancelRequested,
+  SwarmWorkerBound,
 ] as const
-
-// --- Kilo-owned manifest (mirrors SessionDurable) --------------------------
 
 const inventory = Event.inventory(...SwarmTaskDefinitions)
 const unionSchema = Schema.Union(inventory, { mode: "oneOf" }).pipe(Schema.toTaggedUnion("type"))
@@ -95,11 +105,7 @@ export const SwarmDurable = {
   schema: unionSchema,
 } as const
 
-// --- read/replay helper (bounded, non-executing) ---------------------------
-
 export const readSwarmEvents = (db: any, aggregateID: string, after?: number, limit: number = 50) =>
   EventV2.readAggregate(db, { aggregateID, after, limit, manifest: SwarmDurable })
-
-// --- re-export for convenience ---------------------------------------------
 
 export { EventV2 }
