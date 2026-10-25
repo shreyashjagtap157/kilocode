@@ -23,7 +23,17 @@ export namespace SwarmCancellation {
     const binding = yield* db.get<{ session_id: string; lease_id: string; fence: number; state: string }>(sql`
       SELECT session_id, lease_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${input.taskId}
     `).pipe(Effect.orDie)
-    if (!binding) return { ...result, interrupted: false as const }
+
+    if (!binding) {
+      // Nothing is running. Finalize cancellation through the authoritative
+      // lifecycle CAS so queued/reserved/dispatched work cannot remain stranded
+      // with only a cancellation marker.
+      const task = yield* SwarmState.getTask(input.taskId)
+      if (task.state !== "cancelled" && !["integrated", "failed", "quarantined"].includes(task.state)) {
+        yield* SwarmState.transition({ taskId: input.taskId, to: "cancelled", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
+      }
+      return { ...result, interrupted: false as const, cancelled: true as const }
+    }
 
     // Cancellation may race with worker completion. Only interrupt when this
     // binding still owns the current fence; otherwise it is merely recovery data.
@@ -32,10 +42,18 @@ export namespace SwarmCancellation {
       leaseId: binding.lease_id,
       fence: binding.fence,
     }).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)))
-    if (!owned) return { ...result, interrupted: false as const }
+    if (!owned) return { ...result, interrupted: false as const, cancelled: false as const }
 
     const execution = yield* SessionExecution.Service
     yield* execution.interrupt(binding.session_id as any)
-    return { ...result, interrupted: true as const, sessionId: binding.session_id }
+
+    // The interrupt request is process-local; the durable cancelled transition
+    // is the authoritative result and also prevents stale completion from being
+    // accepted by the fenced worker.
+    const task = yield* SwarmState.getTask(input.taskId)
+    if (task.state !== "cancelled" && task.cancel_requested !== 0) {
+      yield* SwarmState.transition({ taskId: input.taskId, to: "cancelled", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
+    }
+    return { ...result, interrupted: true as const, cancelled: true as const, sessionId: binding.session_id }
   })
 }
