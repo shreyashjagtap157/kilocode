@@ -6,6 +6,7 @@
 import { Effect, Schema } from "effect"
 import { randomUUID } from "node:crypto"
 import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
 import type { Agent } from "@/agent/agent"
 import type { Config } from "@/config/config"
 import { SwarmDispatcher } from "./dispatcher"
@@ -53,7 +54,7 @@ export namespace SwarmRuntime {
 
   export type PlannedInput = {
     swarmId: string
-    parentSessionId: Agent.Info["id"]
+    parentSessionId: SessionID
     description: string
     caller: Agent.Info
     subagent: Agent.Info
@@ -99,6 +100,13 @@ export namespace SwarmRuntime {
       parentID: parent.id,
       title: plan.title,
       agent: plan.agent,
+      model: input.subagent.model
+        ? {
+            id: input.subagent.model.modelID,
+            providerID: input.subagent.model.providerID,
+            variant: input.subagent.variant,
+          }
+        : undefined,
       permission: plan.permission,
     }).pipe(
       Effect.tapError(() =>
