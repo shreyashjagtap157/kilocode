@@ -31,17 +31,16 @@ export namespace SwarmState {
 
   const decodeIdempotencyResult = <T>(
     stored: string,
-    request: unknown,
     allowLegacyRawString = false,
-  ): { result: T; conflict: boolean; malformed: boolean } => {
+  ): { result: T; malformed: boolean } => {
     let parsed: unknown
     try {
       parsed = JSON.parse(stored)
     } catch {
       // Only legacy task.create rows stored the task ID as an unquoted raw string.
       return allowLegacyRawString
-        ? { result: stored as T, conflict: false, malformed: false }
-        : { result: undefined as T, conflict: false, malformed: true }
+        ? { result: stored as T, malformed: false }
+        : { result: undefined as T, malformed: true }
     }
 
     if (
@@ -51,14 +50,16 @@ export namespace SwarmState {
     ) {
       const envelope = parsed as { request?: unknown; result?: T }
       if (typeof envelope.request !== "string" || !Object.prototype.hasOwnProperty.call(parsed, "result")) {
-        return { result: undefined as T, conflict: false, malformed: true }
+        return { result: undefined as T, malformed: true }
       }
-      return { result: envelope.result as T, conflict: envelope.request !== JSON.stringify(request), malformed: false }
+      // Existing M2 contract: the first committed result wins for an idempotency
+      // key. Request payload is retained in the envelope for diagnostics, but a
+      // different payload must not cause the already-committed operation to run again.
+      return { result: envelope.result as T, malformed: false }
     }
 
-    // Old transition/cancellation rows stored their JSON result directly, without
-    // the request payload. Preserve replay behavior for those pre-versioned rows.
-    return { result: parsed as T, conflict: false, malformed: false }
+    // Older rows stored the result directly, without the versioned envelope.
+    return { result: parsed as T, malformed: false }
   }
 
   const decodeCancellationResult = (
@@ -136,18 +137,15 @@ export namespace SwarmState {
     const events = yield* EventV2.Service
     const idempotencyRequest = { swarmId: input.swarmId, parentId: input.parentId ?? null }
 
-    // Idempotency keys replay only the same logical create request.
+    // The first committed task.create result wins for a key; retries do not create another task.
     if (input.idemKey) {
       const existing = yield* db
         .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = 'task.create' AND key = ${input.idemKey}`)
         .pipe(Effect.orDie)
       if (existing) {
-        const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest, true)
+        const replay = decodeIdempotencyResult<string>(existing.result, true)
         if (replay.malformed || typeof replay.result !== "string" || !replay.result.startsWith("tsk_")) {
           return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.create idempotency result is malformed" }))
-        }
-        if (replay.conflict) {
-          return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.create payload" }))
         }
         return replay.result
       }
@@ -185,12 +183,9 @@ export namespace SwarmState {
               .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = 'task.create' AND key = ${input.idemKey}`)
               .pipe(Effect.orDie)
             if (!existing) return yield* Effect.die(defect)
-            const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest, true)
+            const replay = decodeIdempotencyResult<string>(existing.result, true)
             if (replay.malformed || typeof replay.result !== "string" || !replay.result.startsWith("tsk_")) {
               return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.create idempotency result is malformed" }))
-            }
-            if (replay.conflict) {
-              return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.create payload" }))
             }
             return replay.result
           })
@@ -226,18 +221,15 @@ export namespace SwarmState {
     const scope = input.idemKey ? `task.transition:${input.taskId}` : undefined
     const idempotencyRequest = { to: input.to, expectedVersion: input.expectedVersion }
 
-    // Idempotency keys replay only the same logical lifecycle transition.
+    // The first committed transition result wins for a key; retries never apply a second transition.
     if (scope) {
       const existing = yield* db
         .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
         .pipe(Effect.orDie)
       if (existing) {
-        const replay = decodeIdempotencyResult<{ version: number }>(existing.result, idempotencyRequest)
+        const replay = decodeIdempotencyResult<{ version: number }>(existing.result)
         if (replay.malformed || !replay.result || !Number.isSafeInteger(replay.result.version) || replay.result.version < 1) {
           return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.transition idempotency result is malformed" }))
-        }
-        if (replay.conflict) {
-          return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.transition payload" }))
         }
         return replay.result
       }
@@ -336,12 +328,9 @@ export namespace SwarmState {
               .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
               .pipe(Effect.orDie)
             if (!existing) return yield* Effect.die(defect)
-            const replay = decodeIdempotencyResult<{ version: number }>(existing.result, idempotencyRequest)
+            const replay = decodeIdempotencyResult<{ version: number }>(existing.result)
             if (replay.malformed || !replay.result || !Number.isSafeInteger(replay.result.version) || replay.result.version < 1) {
               return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.transition idempotency result is malformed" }))
-            }
-            if (replay.conflict) {
-              return yield* Effect.fail(new IdempotencyConflict({ message: "idempotency key was reused with a different task.transition payload" }))
             }
             return replay.result
           })

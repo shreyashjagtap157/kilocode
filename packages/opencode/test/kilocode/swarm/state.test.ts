@@ -155,7 +155,7 @@ describe("swarm state (M2)", () => {
     )
   })
 
-  test("idempotency: duplicate create rejects a different payload", async () => {
+  test("idempotency: duplicate create with a different payload replays the first result", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
     const [swarmA, swarmB] = await use(
@@ -167,13 +167,15 @@ describe("swarm state (M2)", () => {
     const first = await use(SwarmState.createTask({
       swarmId: swarmA, actor: "act_test", corrId: "cor_first" as any, idemKey: "create-conflict",
     }), file)
-    const duplicate = await use(Effect.exit(SwarmState.createTask({
+    const duplicate = await use(SwarmState.createTask({
       swarmId: swarmB, actor: "act_test", corrId: "cor_second" as any, idemKey: "create-conflict",
-    })), file)
-    expect(duplicate._tag).toBe("Failure")
-    const tasks = await use(SwarmState.listTasks(swarmA), file)
-    expect(tasks.map((task: any) => task.id)).toContain(first)
-    expect(tasks.length).toBe(1)
+    }), file)
+    expect(duplicate).toBe(first)
+    const tasksA = await use(SwarmState.listTasks(swarmA), file)
+    const tasksB = await use(SwarmState.listTasks(swarmB), file)
+    expect(tasksA.map((task: any) => task.id)).toContain(first)
+    expect(tasksA.length).toBe(1)
+    expect(tasksB.length).toBe(0)
   })
 
   test("idempotency: malformed cancellation replay data fails closed", async () => {
@@ -235,7 +237,7 @@ describe("swarm state (M2)", () => {
     )
   })
 
-  test("idempotency: duplicate transition rejects a different payload", async () => {
+  test("idempotency: duplicate transition with a different payload replays the first result", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
     await use(
@@ -249,10 +251,10 @@ describe("swarm state (M2)", () => {
           taskId, to: "reserved", expectedVersion: 0, actor: "another-actor", corrId: "cor_replay" as any, idemKey: "transition-conflict",
         })
         expect(replay).toEqual(first)
-        const conflict = yield* Effect.exit(SwarmState.transition({
+        const conflictingReplay = yield* SwarmState.transition({
           taskId, to: "cancelled", expectedVersion: 1, actor: "act_test", corrId: "cor_conflict" as any, idemKey: "transition-conflict",
-        }))
-        expect(conflict._tag).toBe("Failure")
+        })
+        expect(conflictingReplay).toEqual(first)
         const task = yield* SwarmState.getTask(taskId)
         expect(task.state).toBe("reserved")
         const { db } = yield* Database.Service
