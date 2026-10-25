@@ -61,6 +61,27 @@ export namespace SwarmState {
     return { result: parsed as T, conflict: false, malformed: false }
   }
 
+  const decodeCancellationResult = (
+    stored: string,
+  ): { result: { cancelRequested: true; alreadyTerminal: boolean } | undefined; malformed: boolean } => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(stored)
+    } catch {
+      return { result: undefined, malformed: true }
+    }
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      (parsed as Record<string, unknown>).cancelRequested !== true ||
+      typeof (parsed as Record<string, unknown>).alreadyTerminal !== "boolean"
+    ) {
+      return { result: undefined, malformed: true }
+    }
+    return { result: parsed as { cancelRequested: true; alreadyTerminal: boolean }, malformed: false }
+  }
+
   export const newSwarmId = () => `swm_${randomUUID()}`
   export const newTaskId = () => `tsk_${randomUUID()}`
 
@@ -339,14 +360,19 @@ export namespace SwarmState {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
     const scope = input.idemKey ? "task.cancel:" + input.taskId : undefined
-    const resultType = {} as { cancelRequested: boolean; alreadyTerminal: boolean }
 
     // Replays return the first committed result and must not publish another event.
     if (scope) {
       const existing = yield* db
         .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
         .pipe(Effect.orDie)
-      if (existing) return JSON.parse(existing.result) as typeof resultType
+      if (existing) {
+        const replay = decodeCancellationResult(existing.result)
+        if (replay.malformed || !replay.result) {
+          return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.cancel idempotency result is malformed" }))
+        }
+        return replay.result
+      }
     }
 
     const task = yield* getTask(input.taskId)
@@ -365,7 +391,13 @@ export namespace SwarmState {
         const existing = yield* db
           .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
           .pipe(Effect.orDie)
-        if (existing) return JSON.parse(existing.result) as typeof resultType
+        if (existing) {
+          const replay = decodeCancellationResult(existing.result)
+          if (replay.malformed || !replay.result) {
+            return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.cancel idempotency result is malformed" }))
+          }
+          return replay.result
+        }
       }
       return result
     }
@@ -440,7 +472,13 @@ export namespace SwarmState {
               const existing = yield* db
                 .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
                 .pipe(Effect.orDie)
-              if (existing) return JSON.parse(existing.result) as typeof resultType
+              if (existing) {
+                const replay = decodeCancellationResult(existing.result)
+                if (replay.malformed || !replay.result) {
+                  return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.cancel idempotency result is malformed" }))
+                }
+                return replay.result
+              }
             }
 
             const current = yield* db.get<{ state: string; cancel_requested: number }>(sql`
@@ -463,7 +501,13 @@ export namespace SwarmState {
               const existing = yield* db
                 .get<{ result: string }>(sql`SELECT result FROM kilo_swarm_idempotency WHERE scope = ${scope} AND key = ${input.idemKey}`)
                 .pipe(Effect.orDie)
-              if (existing) return JSON.parse(existing.result) as typeof resultType
+              if (existing) {
+                const replay = decodeCancellationResult(existing.result)
+                if (replay.malformed || !replay.result) {
+                  return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.cancel idempotency result is malformed" }))
+                }
+                return replay.result
+              }
             }
             return result
           })
