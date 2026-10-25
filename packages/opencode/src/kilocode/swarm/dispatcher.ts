@@ -29,17 +29,25 @@ export namespace SwarmDispatcher {
     actor: string
     corrId: string
   }) {
-    const task = yield* SwarmState.getTask(input.taskId)
-    if (task.state !== "queued") {
-      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} is not queued (${task.state})` }))
+    const initial = yield* SwarmState.getTask(input.taskId)
+    if (initial.state !== "queued") {
+      return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} is not queued (${initial.state})` }))
     }
 
     const claim = yield* SwarmClaims.claim(input)
     try {
+      // Claim admission advances the task fence without advancing its lifecycle
+      // version. Refresh before the transition so the CAS binds the transition
+      // to the newly admitted fence generation rather than the pre-claim fence.
+      const admitted = yield* SwarmState.getTask(input.taskId)
+      if (admitted.state !== "queued" || admitted.version !== initial.version || admitted.fence !== claim.fence) {
+        return yield* Effect.fail(new DispatchConflict({ message: `task ${input.taskId} changed during claim admission` }))
+      }
+
       const reserved = yield* SwarmState.transition({
         taskId: input.taskId,
         to: "reserved",
-        expectedVersion: task.version,
+        expectedVersion: admitted.version,
         actor: input.actor,
         corrId: input.corrId,
       })
@@ -52,7 +60,7 @@ export namespace SwarmDispatcher {
       })
       return {
         taskId: input.taskId,
-        swarmId: task.swarm_id,
+        swarmId: admitted.swarm_id,
         ownerId: claim.ownerId,
         leaseId: claim.leaseId,
         fence: claim.fence,
