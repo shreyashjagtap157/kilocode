@@ -133,6 +133,28 @@ describe("swarm state (M2)", () => {
     expect(t1).toBe(t2)
   })
 
+  test("idempotency: malformed task-create replay data fails closed", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_idempotency (scope, key, result, time_created)
+          VALUES ('task.create', 'broken-create', '123', ${Date.now()})
+        `)
+        const attempt = yield* Effect.exit(SwarmState.createTask({
+          swarmId, actor: "act_test", corrId: "cor_create" as any, idemKey: "broken-create",
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const taskCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task`)
+        expect(taskCount?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
   test("idempotency: duplicate create rejects a different payload", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)

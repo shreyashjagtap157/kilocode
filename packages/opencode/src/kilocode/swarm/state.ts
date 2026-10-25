@@ -122,7 +122,7 @@ export namespace SwarmState {
         .pipe(Effect.orDie)
       if (existing) {
         const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest, true)
-        if (replay.malformed) {
+        if (replay.malformed || typeof replay.result !== "string" || !replay.result.startsWith("tsk_")) {
           return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.create idempotency result is malformed" }))
         }
         if (replay.conflict) {
@@ -165,7 +165,7 @@ export namespace SwarmState {
               .pipe(Effect.orDie)
             if (!existing) return yield* Effect.die(defect)
             const replay = decodeIdempotencyResult<string>(existing.result, idempotencyRequest, true)
-            if (replay.malformed) {
+            if (replay.malformed || typeof replay.result !== "string" || !replay.result.startsWith("tsk_")) {
               return yield* Effect.fail(new IdempotencyConflict({ message: "stored task.create idempotency result is malformed" }))
             }
             if (replay.conflict) {
