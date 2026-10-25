@@ -1,8 +1,8 @@
-# Kilo Swarm M2 Qualification
+# Kilo Swarm M2 / M3 Qualification
 
-Status: **FOUNDATION IMPLEMENTED; M3 DISPATCH REMAINS NO-GO**
+Status: **M2 FOUNDATION IMPLEMENTED; M3 ADMISSION IMPLEMENTED, EXECUTION INTEGRATION NOT YET QUALIFIED**
 
-## Scope
+## M2 scope
 
 M2 is the durable admission/state foundation for the Kilo-owned swarm runtime. It provides:
 
@@ -22,19 +22,35 @@ M2 is the durable admission/state foundation for the Kilo-owned swarm runtime. I
 - concurrency, rollback, migration, and cross-process regression coverage;
 - focused CI qualification through `.github/workflows/m2-swarm-foundation.yml`.
 
-## Current main-line evidence
+## M3 work now implemented
 
-The M2 implementation is on `main`. Recent hardening commits include:
+`packages/opencode/src/kilocode/swarm/dispatcher.ts` adds the durable dispatch boundary:
 
-- `934eb628e1397f0ce4864fa7c3d470f1a0dfcc02` — atomic/idempotent cancellation;
-- `9d91a38d730f71b94ee6bc86563817bea8e7a0e4` — no forward lifecycle transitions after cancellation;
-- `48dea54eebcecb92fb1344d999ff17d70719c17a` — conflicting idempotency requests rejected;
-- `023eb817b00c3180a07d840d3d27b543f3cc434f` — malformed idempotency records fail closed;
-- `dff17dbb3ccda413b5642ad91dae8119a445deea` — stored task idempotency results validated;
-- `cf59d3aaa2fb6019fef10a36c8729df375f63ce0` — stored cancellation replay results validated;
-- `761725f399b8658b8c88cf708cc517c22f396196` — first-result idempotency semantics preserved;
-- `2f868513a67c84faf393b80a72443a782e814e3d` — lease renewal blocked after cancellation/terminal state;
-- `8eac80508c66c68d168dfb0a3f985a418ce20048` — manual M2 qualification workflow dispatch enabled.
+1. require the task to be `queued`;
+2. acquire a durable claim and worker-capacity reservation;
+3. advance `queued -> reserved` with the existing CAS/event machinery;
+4. advance `reserved -> dispatched` with the same machinery;
+5. release the claim if the admission sequence fails before provider execution;
+6. revalidate the fence immediately before execution;
+7. advance `dispatched -> running` only after ownership validation;
+8. require the same lease/fence to be valid before a worker may commit completion state.
+
+The implementation intentionally does not pretend that a lease expiry can physically interrupt a provider request already in flight. Stale completion must instead fail the durable ownership gate.
+
+## Lease-token hardening
+
+The claim API previously generated a second token that was returned to callers but never persisted. That created an unusable credential. The API now treats the persisted `lease_id` as the durable per-admission token (`token === leaseId`), while the monotonically increasing task `fence` remains the stale-worker generation guard.
+
+## Current tests added
+
+`packages/opencode/test/kilocode/swarm/dispatcher.test.ts` covers:
+
+- queued -> reserved -> dispatched admission;
+- durable fence/lease identity;
+- dispatched -> running only with valid ownership;
+- cancellation preventing the execution gate.
+
+The existing swarm suite remains the broader qualification suite.
 
 ## Required qualification command set
 
@@ -55,33 +71,19 @@ repository root:
 
 The workflow also verifies that the generated schema is unchanged after generation. It runs on relevant swarm/database changes and can be started manually.
 
+## Remaining M3 qualification gates
+
+M3 is **not** declared qualified yet. The remaining gates are:
+
+1. bind an admitted task to the existing Kilo session/provider execution path;
+2. persist the worker/session correlation needed for restart/recovery;
+3. provide lease renewal supervision for long-running provider calls;
+4. prevent stale workers from writing terminal results after losing their fence;
+5. define durable provider-error/cancellation result semantics;
+6. enforce `DynamicAgentFactory` permission ceilings at worker creation;
+7. add duplicate-dispatch, stale-fence, cancellation-race, capacity-exhaustion, and restart tests around the real execution path;
+8. run and record CI evidence before declaring M3 qualified.
+
 ## Safety boundary
 
-M2 does **not** provide:
-
-- background worker dispatch;
-- automatic task polling/resumption;
-- reclaim of an actually running provider/model invocation;
-- physical interruption of a provider/model call;
-- autonomous execution outside the existing Kilo permission ceiling;
-- budget enforcement/debit/reconciliation;
-- artifact persistence/review/integration;
-- approval orchestration;
-- swarm UI/runtime wiring.
-
-A lease expiry is a durable admission fact, not proof that a previously launched model invocation has physically stopped.
-
-## M3 entry gate
-
-M3 should not be enabled merely because M2 state tables exist. Before implementing or enabling dispatch, qualification must establish:
-
-1. a worker-session creation path that uses the existing Kilo session/provider machinery rather than duplicating it;
-2. an atomic dispatch/admission transaction that binds task state, claim fence, worker identity, and correlation ID;
-3. a durable worker lifecycle mapping for `reserved -> dispatched -> running` and terminal/error paths;
-4. cancellation behavior that prevents new admission and marks durable state, while explicitly distinguishing that from physical provider interruption;
-5. lease-loss behavior that prevents stale workers from committing task results;
-6. permission derivation through `DynamicAgentFactory` and the existing Kilo task permission machinery;
-7. deterministic single-process and cross-process tests for duplicate dispatch, stale fences, cancellation races, capacity exhaustion, and restart recovery;
-8. CI evidence for the complete focused suite before M3 is declared qualified.
-
-Until those conditions are implemented and tested, M3 remains **NO-GO**.
+The swarm runtime must never treat advisory messages, provider output, or an expired worker's local state as authority. Durable state, EventV2 commit semantics, task version, cancellation marker, lease identity, and fence remain authoritative.
