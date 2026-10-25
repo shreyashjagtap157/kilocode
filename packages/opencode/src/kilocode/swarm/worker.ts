@@ -79,7 +79,12 @@ export namespace SwarmWorker {
     corrId: string
   }) {
     yield* SwarmDispatcher.beforeExecution({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
-    yield* bindSession(input)
+    const existing = yield* getBinding(input.taskId)
+    if (existing && (existing.session_id !== input.sessionId || existing.lease_id !== input.leaseId || existing.fence !== input.fence)) {
+      return yield* Effect.fail(new ExecutionConflict({ message: `worker binding does not match the admitted execution for ${input.taskId}` }))
+    }
+    if (!existing) yield* bindSession(input)
+
     yield* SwarmDispatcher.startExecution({
       taskId: input.taskId,
       leaseId: input.leaseId,
