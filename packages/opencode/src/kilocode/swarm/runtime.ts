@@ -41,7 +41,7 @@ export namespace SwarmRuntime {
       actor: input.actor,
       corrId: input.corrId,
     })
-    return yield* SwarmWorker.resumeSession({
+    yield* SwarmWorker.resumeSession({
       taskId: admission.taskId,
       sessionId: input.sessionId,
       leaseId: admission.leaseId,
@@ -51,6 +51,7 @@ export namespace SwarmRuntime {
       leaseMs: input.leaseMs,
       renewalIntervalMs: input.renewalIntervalMs,
     })
+    return { taskId: admission.taskId, sessionId: input.sessionId }
   })
 
   export type PlannedInput = {
@@ -149,7 +150,7 @@ export namespace SwarmRuntime {
       })
       .pipe(Effect.asVoid)
 
-    return yield* SwarmWorker.resumeSession({
+    yield* SwarmWorker.resumeSession({
       taskId,
       sessionId: child.id,
       leaseId: admission.leaseId,
@@ -160,6 +161,7 @@ export namespace SwarmRuntime {
       renewalIntervalMs: input.renewalIntervalMs,
       prepare,
     })
+    return { taskId, sessionId: child.id, agent: plan.agent }
   })
 
   /** Run multiple specialized workers concurrently against one swarm. */
