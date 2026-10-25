@@ -11,7 +11,7 @@ describe("SwarmRuntime", () => {
         sessionId: "ses_test",
         actor: "act_test",
         corrId: "cor_test",
-      }).pipe(Effect.provideService as never),
+      }),
     )
     expect(result._tag).toBe("Failure")
   })
