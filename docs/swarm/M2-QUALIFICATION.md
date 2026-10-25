@@ -1,6 +1,6 @@
 # Kilo Swarm M2 / M3 Qualification
 
-Status: **M2 FOUNDATION IMPLEMENTED; M3 ADMISSION IMPLEMENTED, EXECUTION INTEGRATION NOT YET QUALIFIED**
+Status: **M2 FOUNDATION IMPLEMENTED; M3 DISPATCH + SESSION EXECUTION BRIDGE IMPLEMENTED, M3 NOT YET QUALIFIED**
 
 ## M2 scope
 
@@ -28,12 +28,15 @@ M2 is the durable admission/state foundation for the Kilo-owned swarm runtime. I
 
 1. require the task to be `queued`;
 2. acquire a durable claim and worker-capacity reservation;
-3. advance `queued -> reserved` with the existing CAS/event machinery;
-4. advance `reserved -> dispatched` with the same machinery;
-5. release the claim if the admission sequence fails before provider execution;
-6. revalidate the fence immediately before execution;
-7. advance `dispatched -> running` only after ownership validation;
-8. require the same lease/fence to be valid before a worker may commit completion state.
+3. refresh the task snapshot after claim admission because claim acquisition advances the fence without advancing the lifecycle version;
+4. advance `queued -> reserved` with the existing CAS/event machinery;
+5. advance `reserved -> dispatched` with the same machinery;
+6. release the claim if the admission sequence fails before provider execution;
+7. revalidate the fence immediately before execution;
+8. advance `dispatched -> running` only after ownership validation;
+9. require the same lease/fence to be valid before a worker may commit completion state.
+
+`packages/opencode/src/kilocode/swarm/worker.ts` now bridges admitted work into Kilo's existing `SessionExecution.Service`. It deliberately does **not** create a second model/provider runner. A caller supplies an already-created session ID; the bridge resumes it under the swarm lease and moves successful execution to `reviewing`, while provider failures are fenced before transitioning to `failed`.
 
 The implementation intentionally does not pretend that a lease expiry can physically interrupt a provider request already in flight. Stale completion must instead fail the durable ownership gate.
 
@@ -49,6 +52,8 @@ The claim API previously generated a second token that was returned to callers b
 - durable fence/lease identity;
 - dispatched -> running only with valid ownership;
 - cancellation preventing the execution gate.
+
+`packages/opencode/test/kilocode/swarm/worker.test.ts` covers the execution bridge against the existing `SessionExecution.noopLayer`, proving the swarm lifecycle wrapper does not require a parallel execution engine.
 
 The existing swarm suite remains the broader qualification suite.
 
@@ -75,14 +80,13 @@ The workflow also verifies that the generated schema is unchanged after generati
 
 M3 is **not** declared qualified yet. The remaining gates are:
 
-1. bind an admitted task to the existing Kilo session/provider execution path;
-2. persist the worker/session correlation needed for restart/recovery;
-3. provide lease renewal supervision for long-running provider calls;
-4. prevent stale workers from writing terminal results after losing their fence;
-5. define durable provider-error/cancellation result semantics;
-6. enforce `DynamicAgentFactory` permission ceilings at worker creation;
-7. add duplicate-dispatch, stale-fence, cancellation-race, capacity-exhaustion, and restart tests around the real execution path;
-8. run and record CI evidence before declaring M3 qualified.
+1. persist the worker/session correlation needed for restart/recovery;
+2. provide lease-renewal supervision for long-running provider calls;
+3. prevent stale workers from writing terminal results after losing their fence, including a real provider-result persistence path;
+4. define durable provider-error/cancellation result semantics and physical interruption behavior through `SessionExecution.interrupt`;
+5. enforce `DynamicAgentFactory` permission ceilings at worker/session creation;
+6. add duplicate-dispatch, stale-fence, cancellation-race, capacity-exhaustion, and restart tests around the real execution path;
+7. run and record CI evidence before declaring M3 qualified.
 
 ## Safety boundary
 
