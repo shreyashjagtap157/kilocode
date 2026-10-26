@@ -9,6 +9,7 @@ import path from "node:path"
 import { NpmPublish } from "./kilocode/npm-publish"
 import * as KiloSbom from "./kilocode/sbom"
 import * as KiloRelease from "../../../script/kilocode/release"
+import { assembleCliPackage } from "./kilocode/cli-package"
 import type { Manifest } from "../../../script/kilocode/sbom/index"
 // kilocode_change end
 
@@ -109,43 +110,13 @@ for (const filepath of new Bun.Glob("*/*/package.json").scanSync({ cwd: "./dist"
 console.log("binaries", binaries)
 const version = Object.values(binaries)[0]
 
-await $`mkdir -p ./dist/${pkg.name}`
-await $`cp -r ./bin ./dist/${pkg.name}/bin`
-await $`cp ./script/postinstall.mjs ./dist/${pkg.name}/postinstall.mjs`
-await Bun.file(`./dist/${pkg.name}/LICENSE`).write(await Bun.file("../../LICENSE").text())
-await Bun.file(`./dist/${pkg.name}/README.md`).write(await Bun.file("./README.md").text()) // kilocode_change
-
-await Bun.file(`./dist/${pkg.name}/package.json`).write(
-  JSON.stringify(
-    {
-      name: pkg.name, // kilocode_change
-      bin: {
-        // kilocode_change start
-        kilo: `./bin/kilo`,
-        kilocode: `./bin/kilo`,
-        // kilocode_change end
-      },
-      scripts: {
-        postinstall: "node ./postinstall.mjs",
-      },
-      version: version,
-      license: pkg.license,
-      keywords: pkg.keywords, // kilocode_change
-      private: pkg.private, // kilocode_change
-      os: ["darwin", "linux", "win32"],
-      cpu: ["arm64", "x64"],
-      optionalDependencies: binaries,
-      // kilocode_change start
-      repository: {
-        type: "git",
-        url: "https://github.com/Kilo-Org/kilocode",
-      },
-      // kilocode_change end
-    },
-    null,
-    2,
-  ),
-)
+await assembleCliPackage({
+  root: dir,
+  distDir: path.resolve("dist"),
+  metadata: pkg,
+  version,
+  binaries,
+})
 
 const tasks = Object.entries(binaries).map(async ([name]) => {
   await publish(`./dist/${name}`, name, binaries[name])
