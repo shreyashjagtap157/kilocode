@@ -20,6 +20,15 @@ const fullLayer = (file: string) => {
 const use = (effect: any, file: string) =>
   Effect.runPromise(Effect.provide(fullLayer(file))(Effect.scoped(effect)))
 const dbFile = (tmp: any) => (tmp as any).path + "/swarm.db"
+const verifiedCommand = (command: string, sourceSessionId: string) => ({
+  command,
+  exitCode: 0,
+  sourceSessionId,
+  messageId: "msg_test",
+  partId: "part_test",
+  callId: "call_test",
+  outputSha256: "a".repeat(64),
+})
 
 describe("swarm state (M2)", () => {
   test("creates a swarm and task", async () => {
@@ -700,6 +709,7 @@ describe("swarm state (M2)", () => {
           reviewerSessionId: "ses_independent_reviewer",
           reviewerAgent: "reviewer",
           corrId: "cor_review_record" as any,
+          executedCommands: [verifiedCommand("bun test test/kilocode/swarm/state.test.ts", "ses_independent_reviewer")],
           report: {
             verdict: "pass",
             summary: "The worker output satisfies the declared test criterion.",
@@ -752,11 +762,12 @@ describe("swarm state (M2)", () => {
           reviewerSessionId: "ses_racing_reviewer",
           reviewerAgent: "reviewer",
           corrId: "cor_review_race" as any,
+          executedCommands: [verifiedCommand("bun test test/kilocode/swarm/state.test.ts", "ses_racing_reviewer")],
           report: {
             verdict: "pass",
             summary: "Initial review passes but is removed in the transition transaction.",
             checks: [{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }],
-            evidence: [{ id: "e1", kind: "test", reference: "unit-tests", detail: "Passed initially.", result: "pass", exitCode: 0 }],
+            evidence: [{ id: "e1", kind: "test", reference: "bun test test/kilocode/swarm/state.test.ts", detail: "Passed initially.", result: "pass", exitCode: 0 }],
             blockingFindings: [],
             uncertainties: [],
           },
@@ -819,11 +830,12 @@ describe("swarm state (M2)", () => {
           reviewerSessionId: "ses_racing_reviewer",
           reviewerAgent: "reviewer",
           corrId: "cor_review_commit_race" as any,
+          executedCommands: [verifiedCommand("bun test test/kilocode/swarm/state.test.ts", "ses_racing_reviewer")],
           report: {
             verdict: "pass",
             summary: "Review should not be committed after reviewer state changes.",
             checks: [{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }],
-            evidence: [{ id: "e1", kind: "test", reference: "unit-tests", detail: "Passed.", result: "pass", exitCode: 0 }],
+            evidence: [{ id: "e1", kind: "test", reference: "bun test test/kilocode/swarm/state.test.ts", detail: "Passed.", result: "pass", exitCode: 0 }],
             blockingFindings: [],
             uncertainties: [],
           },
@@ -870,6 +882,7 @@ describe("swarm state (M2)", () => {
           reviewerSessionId: "ses_evidence_reviewer",
           reviewerAgent: "reviewer",
           corrId: "cor_evidence_review" as any,
+          executedCommands: [],
           report: {
             verdict: "pass",
             summary: "The reviewer asserted success without a passing command or test.",
@@ -921,6 +934,7 @@ describe("swarm state (M2)", () => {
           reviewerSessionId: "ses_forged_reviewer",
           reviewerAgent: "reviewer",
           corrId: "cor_binding_review" as any,
+          executedCommands: [],
           report: {
             verdict: "pass",
             summary: "Structured review with execution evidence.",
