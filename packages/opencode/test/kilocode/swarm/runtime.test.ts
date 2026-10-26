@@ -82,7 +82,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         const caller = agent("main", Permission.fromConfig({ read: "allow" }), "primary")
         const subagent = agent("worker", Permission.fromConfig({ read: "allow" }))
 
-        yield* SwarmRuntime.runPlanned({
+        const result = yield* SwarmRuntime.runPlanned({
           swarmId,
           parentSessionId: parentID,
           description: "inspect the repository",
@@ -93,6 +93,10 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           corrId: "cor_runtime_test" as any,
         })
 
+        expect(result.sessionId).toBe("ses_swarm_child_1")
+        expect(result.taskId).toMatch(/^tsk_/)
+        expect(result.durationMs).toBeGreaterThanOrEqual(0)
+        expect(result.agent).toBe("worker")
         const { db } = yield* Database.Service
         const task = yield* db
           .get<{ state: string; parent_id: string | null }>(sql`SELECT state, parent_id FROM kilo_swarm_task WHERE swarm_id = ${swarmId}`)
@@ -126,7 +130,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           renewalIntervalMs: 1_000,
         }))
 
-        yield* SwarmRuntime.runPlannedBatch({ workers, concurrency: 2 })
+        const results = yield* SwarmRuntime.runPlannedBatch({ workers, concurrency: 2 })
 
         const { db } = yield* Database.Service
         const rows = yield* db
@@ -134,6 +138,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           .pipe(Effect.orDie)
         expect(rows).toHaveLength(4)
         expect(rows.every((row) => row.state === "reviewing")).toBe(true)
+        expect(results.every((result) => result.durationMs >= 0)).toBe(true)
         expect(maxActive).toBeLessThanOrEqual(2)
         expect(maxActive).toBeGreaterThan(1)
       }),
