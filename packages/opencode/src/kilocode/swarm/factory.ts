@@ -84,6 +84,9 @@ const shellOperatorSuffixes = [">", ">>", ";", "|", "&&", "||", "$(", "`"] as co
  * this ceiling never grants a capability that the caller did not already have.
  */
 export const readOnlyPermissions: Permission.Rule[] = [
+  // Neutral default for capabilities not explicitly restricted below. Intersecting
+  // this ceiling with the original plan can only preserve or reduce authority.
+  { permission: "*", pattern: "*", action: "allow" },
   { permission: "edit", pattern: "*", action: "deny" },
   { permission: "write", pattern: "*", action: "deny" },
   { permission: "apply_patch", pattern: "*", action: "deny" },
