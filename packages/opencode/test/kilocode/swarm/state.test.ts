@@ -957,4 +957,126 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("acceptance gate rejects a directly published review event without executable provenance", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_direct_target" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_direct_reviewer" as any })
+        let targetVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_direct_target" as any })
+          targetVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_direct_reviewer" as any })
+          reviewerVersion += 1
+        }
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_direct_review"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        const events = yield* EventV2.Service
+        // A caller can technically publish a passing event, but the state gate must
+        // reject it because no host-observed execution evidence was attached.
+        yield* events.publish(SwarmTaskReviewPassed, {
+          taskId: taskId as any,
+          swarmId,
+          reviewerTaskId: reviewerTaskId as any,
+          reviewerSessionId: "ses_direct_review",
+          reviewerAgent: "reviewer",
+          verdict: "pass",
+          summary: "Claimed to have reviewed the task.",
+          evidenceJson: JSON.stringify([{ id: "e1", kind: "command", reference: "bun test", detail: "Claimed success.", result: "pass", exitCode: 0 }]),
+          checksJson: JSON.stringify([{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }]),
+          blockingFindingsJson: "[]",
+          uncertaintiesJson: "[]",
+          corrId: "cor_direct_review" as any,
+        })
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: targetVersion, actor: "act_test", corrId: "cor_direct_accept" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("reviewing")
+      }),
+      file,
+    )
+  })
+
+  test("a later blocked review overrides an earlier passing review", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_latest_target" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_latest_reviewer" as any })
+        let targetVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_latest_target" as any })
+          targetVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_latest_reviewer" as any })
+          reviewerVersion += 1
+        }
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        const passed = yield* SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId: "ses_latest_reviewer",
+          reviewerAgent: "reviewer",
+          corrId: "cor_latest_pass" as any,
+          report: {
+            verdict: "pass",
+            summary: "Initial review passed.",
+            checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{ id: "e1", kind: "test", reference: "bun test test/kilocode/swarm/state.test.ts", detail: "Tests passed.", result: "pass", exitCode: 0 }],
+            blockingFindings: [],
+            uncertainties: [],
+          },
+          executedCommands: [verifiedCommand("bun test test/kilocode/swarm/state.test.ts", "ses_latest_reviewer")],
+        })
+        expect(passed.accepted).toBe(true)
+        const blocked = yield* SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId: "ses_latest_reviewer",
+          reviewerAgent: "reviewer",
+          corrId: "cor_latest_blocked" as any,
+          report: {
+            verdict: "fail",
+            summary: "A later review found a blocking regression.",
+            checks: [{ criterion: "regression check", verdict: "fail", evidenceIds: ["e2"] }],
+            evidence: [{ id: "e2", kind: "file", reference: "src/example.ts", detail: "The implementation contradicts the requirement.", result: "observed" }],
+            blockingFindings: ["Regression remains."],
+            uncertainties: [],
+          },
+          executedCommands: [],
+        })
+        expect(blocked.accepted).toBe(false)
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: targetVersion, actor: "act_test", corrId: "cor_latest_accept" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("reviewing")
+        const blockedEvents = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_blocked%'
+        `)
+        expect(blockedEvents?.count).toBe(1)
+      }),
+      file,
+    )
+  })
+
 })
