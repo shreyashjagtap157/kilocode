@@ -30,6 +30,18 @@ export const ReviewReportSchema = Schema.Struct({
 
 export type ReviewReport = Schema.Schema.Type<typeof ReviewReportSchema>
 
+/** Execution evidence extracted from Kilo's persisted tool transcript, not asserted by the reviewer model. */
+export const VerifiedExecutionSchema = Schema.Struct({
+  command: Schema.String,
+  exitCode: Schema.NullOr(Schema.Int),
+  sourceSessionId: Schema.String,
+  messageId: Schema.String,
+  partId: Schema.String,
+  callId: Schema.String,
+  outputSha256: Schema.String,
+})
+export type VerifiedExecution = Schema.Schema.Type<typeof VerifiedExecutionSchema>
+
 type TaskRow = { id: string; swarm_id: string; state: string }
 
 export namespace SwarmVerification {
@@ -53,7 +65,9 @@ export namespace SwarmVerification {
     }
   }
 
-  const problems = (report: ReviewReport, malformed: boolean) => {
+  const normalizeCommand = (command: string) => command.trim().replace(/\\s+/g, " ")
+
+  const problems = (report: ReviewReport, malformed: boolean, executions: readonly VerifiedExecution[], reviewerSessionId: string) => {
     const result: string[] = []
     if (malformed) result.push("review output failed schema validation")
     if (report.verdict !== "pass") result.push("review verdict is not pass")
@@ -90,9 +104,20 @@ export namespace SwarmVerification {
     for (const item of report.evidence) {
       if (item.id.trim() && !referencedEvidence.has(item.id)) result.push(`evidence is not linked to an acceptance criterion: ${item.id}`)
     }
+    // The reviewer may describe evidence, but it cannot manufacture a successful
+    // process exit. Require an exact normalized command match to a completed Kilo
+    // shell invocation persisted in this reviewer's own session transcript.
     const passingExecution = report.evidence.some((item) =>
-      (item.kind === "test" || item.kind === "command") && item.result === "pass" && item.exitCode === 0 && item.reference.trim() && item.detail.trim())
-    if (!passingExecution) result.push("no passing test/command evidence with exitCode 0")
+      (item.kind === "test" || item.kind === "command") &&
+      item.result === "pass" &&
+      item.exitCode === 0 &&
+      item.reference.trim() &&
+      item.detail.trim() &&
+      executions.some((execution) =>
+        execution.sourceSessionId === reviewerSessionId &&
+        execution.exitCode === 0 &&
+        normalizeCommand(execution.command) === normalizeCommand(item.reference)))
+    if (!passingExecution) result.push("no passing test/validation command matched to host-recorded reviewer execution evidence")
     return [...new Set(result)]
   }
 
@@ -103,6 +128,7 @@ export namespace SwarmVerification {
     reviewerAgent: string
     corrId: string
     report: unknown
+    executedCommands: readonly VerifiedExecution[]
   }) {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
@@ -119,14 +145,25 @@ export namespace SwarmVerification {
       return yield* Effect.fail(new InvalidReview({ message: "reviewer session is not the durable session bound to the reviewer task" }))
     }
 
+    const executions = Schema.decodeUnknownSync(Schema.Array(VerifiedExecutionSchema))(input.executedCommands)
+    const invalidExecution = executions.find((execution) =>
+      !execution.command.trim() ||
+      execution.sourceSessionId !== input.reviewerSessionId ||
+      !execution.messageId.trim() ||
+      !execution.partId.trim() ||
+      !execution.callId.trim() ||
+      !/^[0-9a-f]{64}$/.test(execution.outputSha256))
+    if (invalidExecution) return yield* Effect.fail(new InvalidReview({ message: "host execution evidence is malformed or belongs to another session" }))
+
     const decoded = decode(input.report)
-    const failures = problems(decoded.report, decoded.malformed)
+    const failures = problems(decoded.report, decoded.malformed, executions, input.reviewerSessionId)
     const verdict = decoded.report.verdict === "pass" && failures.length ? "inconclusive" : decoded.report.verdict
     const blocking = [...new Set([...decoded.report.blockingFindings, ...failures])]
     const payload = {
       taskId: input.taskId as any, swarmId: target.swarm_id, reviewerTaskId: input.reviewerTaskId as any,
       reviewerSessionId: input.reviewerSessionId, reviewerAgent: input.reviewerAgent, verdict,
       summary: decoded.report.summary, evidenceJson: JSON.stringify(decoded.report.evidence),
+      executionEvidenceJson: JSON.stringify(executions),
       checksJson: JSON.stringify(decoded.report.checks), blockingFindingsJson: JSON.stringify(blocking),
       uncertaintiesJson: JSON.stringify(decoded.report.uncertainties), corrId: input.corrId as any,
     }
