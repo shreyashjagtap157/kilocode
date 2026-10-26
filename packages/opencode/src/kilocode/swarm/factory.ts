@@ -142,6 +142,7 @@ export type Input = {
 export const DynamicAgentFactory = {
   Plan,
   intersect,
+  readOnlyPermissions,
   plan(input: Input): Plan {
     KiloTask.validate(input.subagent, input.subagent.name)
     const session = input.session.permission ?? []
