@@ -141,4 +141,22 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         }).pipe(Effect.asVoid),
     )
   })
+
+  test("durably cancels a queued task without creating or interrupting a worker session", async () => {
+    await using tmp = await tmpdir()
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_cancel_test", corrId: "cor_cancel_test" as any })
+        const result = yield* SwarmRuntime.cancel({ taskId, actor: "act_cancel_test", corrId: "cor_cancel_test_2" as any })
+        expect(result.taskId).toBe(taskId)
+        expect(result.sessionId).toBeUndefined()
+        expect(result.alreadyTerminal).toBe(false)
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("cancelled")
+        expect(task.cancel_requested).toBe(1)
+      }),
+      (tmp as any).path + "/swarm.db",
+    )
+  })
 })
