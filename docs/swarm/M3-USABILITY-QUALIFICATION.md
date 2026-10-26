@@ -4,9 +4,11 @@
 
 The Kilo-owned swarm runtime exposes a `swarm` builtin tool. It accepts a bounded list of configured specialist agents, preflights their subagent eligibility and permission plans, creates a durable swarm and one child Kilo session per specialist, reuses Kilo's existing subagent model-resolution policy, derives each worker's permission ceiling from the existing Kilo delegation rules, admits each worker through the fenced swarm claim/reservation layer, queues the real child prompt through `SessionPrompt`, waits on Kilo's `SessionDrain` for the actual provider/tool execution to finish, supervises the lease while execution is active, and returns the latest persisted assistant finding from each worker session.
 
-Batch execution now uses settled worker outcomes: a failed specialist is reported without discarding successful findings from other specialists, while each failed worker's task is still cancelled by its own runtime failure boundary.
+Batch execution uses settled worker outcomes: a failed specialist is reported without discarding successful findings from other specialists, while each failed worker's task is cancelled by its own runtime failure boundary.
 
 The runtime also exposes a cancellation boundary that durably records cancellation before interrupting a bound Kilo child session, preventing the cancelled worker from renewing or committing completion under its old fence.
+
+Worker binding is concurrency-safe: the durable task binding is insert-once and a competing session/lease/fence generation fails closed rather than replacing the winning binding.
 
 ## Useful-work criteria
 
@@ -21,8 +23,16 @@ A swarm is considered useful only when all of the following are true:
 7. Worker lease renewal keeps long-running work admitted and stops when ownership is lost.
 8. Worker findings are returned to the caller rather than requiring manual inspection of child sessions.
 9. Partial failures do not discard successful specialist findings.
-10. Migration, swarm regression tests, and OpenCode typecheck pass in CI.
-11. A real configured provider/model run demonstrates that independent specialists produce usable findings that the parent agent can synthesize.
+10. Claim/reservation capacity is released after successful completion, failure, and cancellation.
+11. Concurrent worker binding cannot replace an already-winning session binding.
+12. Migration, swarm regression tests, and OpenCode typecheck pass in CI.
+13. A real configured provider/model run demonstrates that independent specialists produce usable findings that the parent agent can synthesize.
+
+## Current automated regression coverage
+
+The focused swarm suite covers durable state, migration/recovery behavior, dispatch/fencing, worker binding, concurrent binding races, lease supervision, cancellation interruption, planned child-session execution, bounded parallelism, partial worker outcomes, and capacity release.
+
+The qualification workflow also runs generated-schema checks and OpenCode typechecking. The workflow is configured for both pull requests and pushes to `main` affecting the swarm/runtime/tool-registry surface.
 
 ## Deliberate limitations
 
