@@ -1160,11 +1160,24 @@ describe("swarm state (M2)", () => {
         const failedSession = "ses_host_exit_mismatch"
         yield* seedHostCommandPart(db, { sessionId: failedSession, command, exitCode: 1 })
         const failed = yield* SwarmVerification.hostExecutionProblems(db, {
-          executionEvidenceJson: JSON.stringify([verifiedCommand(command, failedSession)]),
+          executionEvidenceJson: JSON.stringify([verifiedCommand(command, failedSession, 1)]),
           reviewerSessionId: failedSession,
         })
-        expect(failed.length).toBeGreaterThan(0)
-        expect(failed[0]).toContain("exit 0")
+        // The failed execution is authentic evidence and should be preserved.
+        // It still cannot satisfy a review criterion claiming exitCode 0.
+        expect(failed).toEqual([])
+        const qualification = SwarmVerification.qualificationProblems({
+          summary: "Claimed success despite an observed failed exit.",
+          evidenceJson: JSON.stringify([{
+            id: "e1", kind: "command", reference: command, detail: "Claimed to pass.", result: "pass", exitCode: 0,
+          }]),
+          checksJson: JSON.stringify([{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }]),
+          blockingFindingsJson: "[]",
+          uncertaintiesJson: "[]",
+          executionEvidenceJson: JSON.stringify([verifiedCommand(command, failedSession, 1)]),
+          reviewerSessionId: failedSession,
+        })
+        expect(qualification.some((item) => item.includes("no passing test/validation command"))).toBe(true)
 
         const hashSession = "ses_host_output_mismatch"
         yield* seedHostCommandPart(db, { sessionId: hashSession, command, output: "trusted output" })
