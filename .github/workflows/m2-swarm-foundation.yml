@@ -64,6 +64,12 @@ jobs:
         env:
           KILO_EXPERIMENTAL_DISABLE_FILEWATCHER: 'true'
 
+      - name: Test swarm package command
+        working-directory: packages/opencode
+        run: bun run test:swarm
+        env:
+          KILO_EXPERIMENTAL_DISABLE_FILEWATCHER: 'true'
+
       - name: Typecheck OpenCode swarm integration
         working-directory: packages/opencode
         run: bun run typecheck
