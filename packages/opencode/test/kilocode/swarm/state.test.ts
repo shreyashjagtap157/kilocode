@@ -38,6 +38,21 @@ const seedHostCommandPart = (
   const partId = "part_test"
   const callId = "call_test"
   const now = Date.now()
+  // PartTable.message_id has a real foreign key. Seed the minimal parent chain
+  // so these tests exercise canonical persisted tool parts rather than bypassing
+  // the database's referential-integrity rules.
+  yield* db.run(sql`
+    INSERT OR IGNORE INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+    VALUES (${"prj_swarm_review_test"}, ${"/tmp/kilo-swarm-review-test"}, ${"swarm-review-test"}, ${now}, ${now}, ${JSON.stringify(["/tmp/kilo-swarm-review-test"])})
+  `).pipe(Effect.orDie)
+  yield* db.run(sql`
+    INSERT OR IGNORE INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+    VALUES (${input.sessionId}, ${"prj_swarm_review_test"}, ${"swarm-review-test"}, ${"/tmp/kilo-swarm-review-test"}, ${"Swarm review test"}, ${"test"}, ${now}, ${now})
+  `).pipe(Effect.orDie)
+  yield* db.run(sql`
+    INSERT OR IGNORE INTO message (id, session_id, time_created, time_updated, data)
+    VALUES (${"msg_test"}, ${input.sessionId}, ${now}, ${now}, ${JSON.stringify({ role: "assistant", time: { created: now, completed: now } })})
+  `).pipe(Effect.orDie)
   const part = {
     type: "tool",
     callID: callId,
