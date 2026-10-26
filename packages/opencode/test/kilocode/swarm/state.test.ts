@@ -6,7 +6,7 @@ import { tmpdir } from "../../fixture/fixture"
 import { sql } from "drizzle-orm"
 import { Layer } from "effect"
 import { SwarmState } from "@/kilocode/swarm/state"
-import { SwarmTaskCancelRequested, SwarmTaskClaimed, SwarmTaskTransitioned } from "@/kilocode/swarm/events"
+import { SwarmTaskCancelRequested, SwarmTaskClaimed, SwarmTaskReviewPassed, SwarmTaskTransitioned } from "@/kilocode/swarm/events"
 import { SwarmVerification } from "@/kilocode/swarm/verification"
 import { SwarmClaims } from "@/kilocode/swarm/claims"
 import { SwarmRecovery } from "@/kilocode/swarm/recovery"
@@ -767,6 +767,58 @@ describe("swarm state (M2)", () => {
           SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'
         `)
         expect(reviewEvent?.count).toBe(1)
+      }),
+      file,
+    )
+  })
+
+
+  test("review event commit revalidates reviewer state", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_review_target" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_review_reviewer" as any })
+        let targetVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_review_target" as any })
+          targetVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_review_reviewer" as any })
+          reviewerVersion += 1
+        }
+
+        const { db } = yield* Database.Service
+        const events = yield* EventV2.Service
+        // Change the reviewer after preflight but in the review event transaction.
+        // The commit hook must reject this review and roll back the injected change.
+        yield* events.project(SwarmTaskReviewPassed, () =>
+          db.run(sql`UPDATE kilo_swarm_task SET state = 'failed' WHERE id = ${reviewerTaskId}`).pipe(Effect.asVoid, Effect.orDie),
+        )
+        const attempt = yield* Effect.exit(SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId: "ses_racing_reviewer",
+          reviewerAgent: "reviewer",
+          corrId: "cor_review_commit_race" as any,
+          report: {
+            verdict: "pass",
+            summary: "Review should not be committed after reviewer state changes.",
+            checks: [{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{ id: "e1", kind: "test", reference: "unit-tests", detail: "Passed.", result: "pass", exitCode: 0 }],
+            blockingFindings: [],
+            uncertainties: [],
+          },
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const reviewer = yield* SwarmState.getTask(reviewerTaskId)
+        expect(reviewer.state).toBe("reviewing")
+        const reviewEvent = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'
+        `)
+        expect(reviewEvent?.count).toBe(0)
       }),
       file,
     )
