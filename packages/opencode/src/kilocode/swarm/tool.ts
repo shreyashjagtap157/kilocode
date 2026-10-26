@@ -8,11 +8,7 @@ import { SwarmRuntime } from "./runtime"
 import { SwarmState } from "./state"
 import { DynamicAgentFactory } from "./factory"
 
-const Worker = Schema.Struct({
-  agent: Schema.String,
-  role: Schema.String,
-  prompt: Schema.String,
-})
+const Worker = Schema.Struct({ agent: Schema.String, role: Schema.String, prompt: Schema.String })
 const Parameters = Schema.Struct({
   workers: Schema.Array(Worker),
   maxWorkers: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1), Schema.lessThanOrEqualTo(12))),
@@ -27,6 +23,10 @@ function finding(messages: MessageV2.WithParts[]) {
   return message.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim() || "No textual assistant finding was persisted."
 }
 
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : typeof error === "string" ? error : String(error)
+}
+
 export const SwarmTool: Tool.Info<typeof Parameters> = {
   id: "swarm",
   init: () => Effect.succeed({
@@ -38,17 +38,8 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const sessions = yield* Session.Service
       const parent = yield* sessions.get(ctx.sessionID as SessionID)
       const resolved = yield* Effect.forEach(args.workers, (worker) => Agent.get(worker.agent), { concurrency: "unbounded" })
-      // Preflight every specialist before creating durable swarm state. This
-      // rejects primary agents and invalid permission plans without leaving a
-      // partially-created swarm behind.
       for (const [index, subagent] of resolved.entries()) {
-        DynamicAgentFactory.plan({
-          parentID: parent.id,
-          description: args.workers[index]?.role ?? subagent.name,
-          caller,
-          subagent,
-          session: parent,
-        })
+        DynamicAgentFactory.plan({ parentID: parent.id, description: args.workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
       }
       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
@@ -62,13 +53,24 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         actor: ctx.agent,
         corrId: `${base}_${index}` as any,
       }))
-      const results = yield* SwarmRuntime.runPlannedBatch({ workers: planned, concurrency: args.maxWorkers ?? args.workers.length })
-      const reports = yield* Effect.forEach(results, (result) => MessageV2.stream(result.sessionId as SessionID), { concurrency: "unbounded" })
-      const entries = results.map((result, index) => ({ role: args.workers[index]?.role ?? result.agent, taskId: result.taskId, sessionId: result.sessionId, finding: finding(reports[index] ?? []) }))
+      const batch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: planned, concurrency: args.maxWorkers ?? args.workers.length })
+      const reports = yield* Effect.forEach(batch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
+      const entries = batch.completed.map((entry, reportIndex) => ({
+        role: args.workers[entry.index]?.role ?? entry.result.agent,
+        taskId: entry.result.taskId,
+        sessionId: entry.result.sessionId,
+        finding: finding(reports[reportIndex] ?? []),
+      }))
+      const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
       return {
-        title: `Swarm completed ${entries.length} workers`,
-        output: [`Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, ...entries.flatMap((entry, index) => [`\n## ${index + 1}. ${entry.role}`, entry.finding, `(task=${entry.taskId}, session=${entry.sessionId})`])].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, workers: entries },
+        title: `Swarm completed ${entries.length}/${args.workers.length} workers`,
+        output: [
+          `Swarm objective: ${args.objective}`,
+          `Workers completed: ${entries.length}/${args.workers.length}`,
+          ...entries.flatMap((entry, index) => [`\n## ${index + 1}. ${entry.role}`, entry.finding, `(task=${entry.taskId}, session=${entry.sessionId})`]),
+          ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
+        ].join("\n"),
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, workers: entries, failures },
       }
     }),
   }),
