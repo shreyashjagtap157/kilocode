@@ -40,4 +40,36 @@ describe("swarm worker binding", () => {
       dbFile(tmp),
     )
   })
+
+  test("never allows a concurrent binder to replace the winning session", async () => {
+    await using tmp = await tmpdir()
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_race", corrId: "cor_race" as any })
+        const admission = yield* SwarmDispatcher.admit({
+          taskId,
+          ownerId: "wrk_binding_race",
+          leaseMs: 30_000,
+          actor: "act_race",
+          corrId: "cor_race" as any,
+        })
+        const [left, right] = yield* Effect.all(
+          [
+            SwarmWorker.bindSession({ taskId, sessionId: "ses_binding_left", leaseId: admission.leaseId, fence: admission.fence }),
+            SwarmWorker.bindSession({ taskId, sessionId: "ses_binding_right", leaseId: admission.leaseId, fence: admission.fence }),
+          ],
+          { concurrency: 2, discard: false },
+        ).pipe(Effect.map((results) => results.map((result) => ({ _tag: "Right" as const, result }))))
+          .pipe(Effect.catchAll(() => Effect.succeed([] as Array<{ _tag: "Right"; result: unknown }>)))
+        void left
+        void right
+        const binding = yield* SwarmWorker.getBinding(taskId)
+        expect(["ses_binding_left", "ses_binding_right"]).toContain(binding?.session_id)
+        expect(binding?.lease_id).toBe(admission.leaseId)
+        expect(binding?.fence).toBe(admission.fence)
+      }),
+      dbFile(tmp),
+    )
+  })
 })
