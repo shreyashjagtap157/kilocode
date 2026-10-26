@@ -40,18 +40,26 @@ const readOnlyShellCommands = [
   "bun run typecheck*",
   "bun run lint*",
   "bun run check*",
+  "bun run build*",
+  "bun run format*",
   "npm test*",
   "npm run test*",
   "npm run typecheck*",
   "npm run lint*",
+  "npm run build*",
   "pnpm test*",
   "pnpm run test*",
   "pnpm --filter * test*",
   "pnpm --filter * run test*",
+  "pnpm --filter * run typecheck*",
+  "pnpm --filter * run lint*",
+  "pnpm --filter * run build*",
   "yarn test*",
   "yarn run test*",
+  "yarn run build*",
   "cargo test*",
   "cargo check*",
+  "cargo build*",
   "cargo clippy*",
   "cargo fmt --check*",
   "go test*",
@@ -69,6 +77,7 @@ const readOnlyShellCommands = [
   "dotnet test*",
   "make test*",
   "make check*",
+  "make build*",
   "biome check*",
   "prettier --check*",
   "npx vitest*",
@@ -76,6 +85,21 @@ const readOnlyShellCommands = [
 ] as const
 
 const shellOperatorSuffixes = [">", ">>", ";", "|", "&&", "||", "$(", "`"] as const
+
+const shellDeniedPrefixes = [
+  // ripgrep can launch arbitrary preprocessors; that is not read-only inspection.
+  "rg --pre*",
+  "rg *--pre*",
+  // Avoid user-configured external diff/textconv executables during review.
+  "git diff --ext-diff*",
+  "git diff *--ext-diff*",
+  "git diff --textconv*",
+  "git diff *--textconv*",
+  "git show --ext-diff*",
+  "git show *--ext-diff*",
+  "git show --textconv*",
+  "git show *--textconv*",
+] as const
 
 /**
  * A reviewer may inspect files and run validation, but must not mutate source via
@@ -94,6 +118,7 @@ export const readOnlyPermissions: Permission.Rule[] = [
   { permission: "todowrite", pattern: "*", action: "deny" },
   { permission: "bash", pattern: "*", action: "deny" },
   ...readOnlyShellCommands.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })),
+  ...shellDeniedPrefixes.map((pattern) => ({ permission: "bash", pattern, action: "deny" as const })),
   ...readOnlyShellCommands.flatMap((pattern) =>
     shellOperatorSuffixes.map((operator) => ({
       permission: "bash",
