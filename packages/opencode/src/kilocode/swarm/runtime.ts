@@ -30,7 +30,6 @@ export namespace SwarmRuntime {
     return { taskId: admission.taskId, sessionId: input.sessionId }
   })
 
-  /** Single authoritative cancellation entry point for swarm workers. */
   export const cancel = Effect.fn("SwarmRuntime.cancel")(function* (input: { taskId: string; actor: string; corrId: string; idemKey?: string }) {
     return yield* SwarmCancellation.request(input)
   })
@@ -38,6 +37,7 @@ export namespace SwarmRuntime {
   export type PlannedInput = {
     swarmId: string; parentSessionId: SessionID; description: string; prompt: string; caller: Agent.Info; subagent: Agent.Info; actor: string; corrId: string
     mcp?: ConfigType.Info["mcp"]; depth?: number; maxDepth?: number; leaseMs?: number; renewalIntervalMs?: number; ownerId?: string
+    readOnly?: boolean
   }
   export type PlannedResult = { taskId: string; sessionId: string; agent: string; durationMs: number }
 
@@ -51,30 +51,30 @@ export namespace SwarmRuntime {
     const parent = yield* sessions.get(input.parentSessionId)
     if (!parent.model) return yield* Effect.fail(new InvalidInput({ message: `parent session ${parent.id} has no model` }))
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
+    const executionPlan = input.readOnly
+      ? { ...plan, permission: DynamicAgentFactory.intersect(plan.permission, [{ permission: "edit", pattern: "*", action: "deny" as const }]), canTask: false, canTodo: false }
+      : plan
     const cfg = yield* config.get()
-    const resolved = yield* KiloTask.resolveModel({ name: plan.agent, agent: input.subagent, config: cfg, parent: { modelID: parent.model.id, providerID: parent.model.providerID }, variant: input.subagent.variant, provider, selection: {} })
+    const resolved = yield* KiloTask.resolveModel({ name: executionPlan.agent, agent: input.subagent, config: cfg, parent: { modelID: parent.model.id, providerID: parent.model.providerID }, variant: input.subagent.variant, provider, selection: {} })
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
 
     const execute = Effect.gen(function* () {
-      // Persist the resolved worker model on the child session. The prompt also receives
-      // the same resolved model below, but the session itself must remain self-describing
-      // for recovery, inspection, cancellation, and subsequent session resumption.
       const child = yield* sessions.create({
         parentID: parent.id,
-        title: plan.title,
-        agent: plan.agent,
+        title: executionPlan.title,
+        agent: executionPlan.agent,
         model: { id: resolved.model.modelID, providerID: resolved.model.providerID, variant: resolved.variant },
-        permission: plan.permission,
+        permission: executionPlan.permission,
       })
       yield* drain.link(child.id, parent.id)
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
       const work = Effect.gen(function* () {
-        yield* prompt.prompt({ messageID: MessageID.ascending(), sessionID: child.id, model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID }, variant: resolved.variant, agent: plan.agent, tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) }, parts: [{ type: "text", text: input.prompt }] })
+        yield* prompt.prompt({ messageID: MessageID.ascending(), sessionID: child.id, model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID }, variant: resolved.variant, agent: executionPlan.agent, tools: { question: false, ...(executionPlan.canTodo ? {} : { todowrite: false }), ...(executionPlan.canTask ? {} : { task: false }) }, parts: [{ type: "text", text: input.prompt }] })
         yield* drain.wait(child.id)
       }).pipe(Effect.asVoid)
       yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, work })
-      return { taskId, sessionId: child.id, agent: plan.agent, durationMs: Math.max(0, Date.now() - startedAt) }
+      return { taskId, sessionId: child.id, agent: executionPlan.agent, durationMs: Math.max(0, Date.now() - startedAt) }
     })
     return yield* execute.pipe(Effect.catchAll((error) => SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(Effect.ignore, Effect.andThen(Effect.fail(error)))))
   })
@@ -87,7 +87,6 @@ export namespace SwarmRuntime {
     return yield* Effect.all(input.workers.map((worker) => runPlanned(worker)), { concurrency })
   })
 
-  /** Run all workers independently, preserving successful workers when another worker fails. */
   export const runPlannedBatchSettled = Effect.fn("SwarmRuntime.runPlannedBatchSettled")(function* (input: { workers: readonly PlannedInput[]; concurrency?: number }) {
     if (input.workers.length === 0) return { completed: [], failed: [] as Array<{ index: number; error: unknown }> }
     if (input.workers.length > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `worker count cannot exceed ${MAX_WORKERS}` }))
