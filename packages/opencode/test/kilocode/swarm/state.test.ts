@@ -692,7 +692,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, "ses_independent_reviewer", "owner_test", "lease_test", 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_independent_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         const review = yield* SwarmVerification.recordReview({
           taskId,
@@ -744,7 +744,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, "ses_racing_reviewer", "owner_test", "lease_test", 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* SwarmVerification.recordReview({
           taskId,
@@ -805,7 +805,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, "ses_racing_reviewer", "owner_test", "lease_test", 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         const events = yield* EventV2.Service
         // Change the reviewer after preflight but in the review event transaction.
