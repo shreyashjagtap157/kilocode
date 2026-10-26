@@ -47,7 +47,6 @@ type TaskRow = { id: string; swarm_id: string; state: string }
 
 export namespace SwarmVerification {
   export class InvalidReview extends Schema.TaggedErrorClass<InvalidReview>()("SwarmVerification.InvalidReview", { message: Schema.String }) {}
-  export class AcceptanceBlocked extends Schema.TaggedErrorClass<AcceptanceBlocked>()("SwarmVerification.AcceptanceBlocked", { message: Schema.String }) {}
 
   const decode = (value: unknown) => {
     try {
@@ -337,12 +336,5 @@ export namespace SwarmVerification {
     return { verdict, accepted: verdict === "pass", blockingFindings: blocking, evidence: decoded.report.evidence, checks: decoded.report.checks }
   })
 
-  export const requireAcceptance = Effect.fn("SwarmVerification.requireAcceptance")(function* (taskId: string) {
-    const { db } = yield* Database.Service
-    const task = yield* db.get<{ id: string; state: string }>(sql`SELECT id, state FROM kilo_swarm_task WHERE id = ${taskId}`).pipe(Effect.orDie)
-    if (!task) return yield* Effect.fail(new AcceptanceBlocked({ message: `task does not exist: ${taskId}` }))
-    const review = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'`).pipe(Effect.orDie)
-    if (!review || review.count < 1) return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has no durable passing independent review` }))
-    return { taskId, reviewCount: review.count }
-  })
+
 }
