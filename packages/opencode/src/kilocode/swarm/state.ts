@@ -219,6 +219,18 @@ export namespace SwarmState {
   // This is also rechecked inside EventV2's commit hook to close the preflight race.
   const assertAcceptance = (db: DB, taskId: string, swarmId: string) =>
     Effect.gen(function* () {
+      // A task cannot be accepted while any direct child remains unqualified.
+      const child = yield* db
+        .get<{ id: string; state: string }>(sql`
+          SELECT id, state FROM kilo_swarm_task
+          WHERE parent_id = ${taskId} AND state NOT IN ('accepted', 'integrated')
+          LIMIT 1
+        `)
+        .pipe(Effect.orDie)
+      if (child) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `child task ${child.id} is not accepted/integrated (${child.state})` }))
+      }
+
       // The latest review outcome is authoritative. A stale earlier PASS must not
       // override a later failed/inconclusive review.
       const review = yield* db
@@ -284,9 +296,9 @@ export namespace SwarmState {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review evidence is invalid: ${evidenceProblems[0]}` }))
       }
 
-      // Finally tie the review proof back to the canonical SessionEvent tool
-      // call and success rows stored by Kilo for this exact reviewer session.
-      // A syntactically plausible forged command record cannot qualify a task.
+      // Finally tie the review proof back to the canonical persisted completed
+      // shell-tool part for this exact reviewer session. A plausible but forged
+      // command record cannot qualify a task.
       const hostProblems = yield* SwarmVerification.hostExecutionProblems(db, {
         executionEvidenceJson: data.executionEvidenceJson,
         reviewerSessionId,
