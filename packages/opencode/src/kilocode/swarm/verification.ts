@@ -188,6 +188,7 @@ export namespace SwarmVerification {
     /^make\s+(?:test|check|verify|build|lint)\b/i,
     /^biome\s+(?:check|lint)\b/i,
     /^prettier\s+--check\b/i,
+    /^Invoke-Pester\b/i,
     /^npx\s+(?:vitest|jest|playwright|tsc|eslint|prettier)\b/i,
   ] as const
 
