@@ -30,6 +30,46 @@ const verifiedCommand = (command: string, sourceSessionId: string) => ({
   outputSha256: "a".repeat(64),
 })
 
+const seedHostCommandEvents = (
+  db: Database.Interface["db"],
+  input: { sessionId: string; command: string },
+) => Effect.gen(function* () {
+  const messageId = "msg_test"
+  const callId = "call_test"
+  const timestamp = "2026-10-26T00:00:00.000Z"
+  const called = {
+    sessionID: input.sessionId,
+    timestamp,
+    assistantMessageID: messageId,
+    callID: callId,
+    tool: "bash",
+    input: { command: input.command },
+    provider: { executed: true },
+  }
+  const succeeded = {
+    sessionID: input.sessionId,
+    timestamp,
+    assistantMessageID: messageId,
+    callID: callId,
+    structured: { exit: 0 },
+    content: [],
+    provider: { executed: true },
+  }
+  yield* db.run(sql`
+    INSERT INTO event_sequence (aggregate_id, seq, owner_id)
+    VALUES (${input.sessionId}, 2, NULL)
+    ON CONFLICT(aggregate_id) DO UPDATE SET seq = excluded.seq
+  `).pipe(Effect.orDie)
+  yield* db.run(sql`
+    INSERT INTO event (id, aggregate_id, seq, type, data)
+    VALUES (${"evt_" + input.sessionId + "_called"}, ${input.sessionId}, 1, 'session.next.tool.called', ${JSON.stringify(called)})
+  `).pipe(Effect.orDie)
+  yield* db.run(sql`
+    INSERT INTO event (id, aggregate_id, seq, type, data)
+    VALUES (${"evt_" + input.sessionId + "_success"}, ${input.sessionId}, 2, 'session.next.tool.success', ${JSON.stringify(succeeded)})
+  `).pipe(Effect.orDie)
+})
+
 describe("swarm state (M2)", () => {
   test("creates a swarm and task", async () => {
     await using tmp = await tmpdir()
@@ -703,6 +743,10 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_independent_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
+                yield* seedHostCommandEvents(db, {
+          sessionId: "ses_independent_reviewer",
+          command: "bun test test/kilocode/swarm/state.test.ts",
+        })
         const review = yield* SwarmVerification.recordReview({
           taskId,
           reviewerTaskId,
@@ -756,6 +800,10 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
+        yield* seedHostCommandEvents(db, {
+          sessionId: "ses_racing_reviewer",
+          command: "bun test test/kilocode/swarm/state.test.ts",
+        })
         yield* SwarmVerification.recordReview({
           taskId,
           reviewerTaskId,
@@ -818,6 +866,10 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
+        yield* seedHostCommandEvents(db, {
+          sessionId: "ses_racing_reviewer",
+          command: "bun test test/kilocode/swarm/state.test.ts",
+        })
         const events = yield* EventV2.Service
         // Change the reviewer after preflight but in the review event transaction.
         // The commit hook must reject this review and roll back the injected change.
@@ -1030,6 +1082,10 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
+                yield* seedHostCommandEvents(db, {
+          sessionId: "ses_latest_reviewer",
+          command: "bun test test/kilocode/swarm/state.test.ts",
+        })
         const passed = yield* SwarmVerification.recordReview({
           taskId,
           reviewerTaskId,
