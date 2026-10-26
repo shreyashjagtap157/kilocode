@@ -20,15 +20,7 @@ import { DynamicAgentFactory } from "./factory"
 export namespace SwarmRuntime {
   export class InvalidInput extends Schema.TaggedErrorClass<InvalidInput>()("SwarmRuntime.InvalidInput", { message: Schema.String }) {}
 
-  export type Input = {
-    taskId: string
-    ownerId: string
-    sessionId: string
-    actor: string
-    corrId: string
-    leaseMs?: number
-    renewalIntervalMs?: number
-  }
+  export type Input = { taskId: string; ownerId: string; sessionId: string; actor: string; corrId: string; leaseMs?: number; renewalIntervalMs?: number }
 
   export const runSession = Effect.fn("SwarmRuntime.runSession")(function* (input: Input) {
     if (!input.taskId.startsWith("tsk_")) return yield* Effect.fail(new InvalidInput({ message: "invalid swarm task id" }))
@@ -41,9 +33,7 @@ export namespace SwarmRuntime {
   /** Cancel a swarm task and interrupt its actual Kilo execution when one is bound. */
   export const cancel = Effect.fn("SwarmRuntime.cancel")(function* (input: { taskId: string; actor: string; corrId: string; idemKey?: string }) {
     const task = yield* SwarmState.getTask(input.taskId)
-    if (["accepted", "rejected", "integrated", "failed", "cancelled", "stale", "quarantined"].includes(task.state)) {
-      return { taskId: input.taskId, sessionId: undefined, alreadyTerminal: true }
-    }
+    if (["accepted", "rejected", "integrated", "failed", "cancelled", "stale", "quarantined"].includes(task.state)) return { taskId: input.taskId, sessionId: undefined, alreadyTerminal: true }
     const result = yield* SwarmState.requestCancel(input)
     const binding = yield* SwarmWorker.getBinding(input.taskId)
     if (binding && binding.state === "bound") {
@@ -57,25 +47,12 @@ export namespace SwarmRuntime {
   })
 
   export type PlannedInput = {
-    swarmId: string
-    parentSessionId: SessionID
-    description: string
-    prompt: string
-    caller: Agent.Info
-    subagent: Agent.Info
-    actor: string
-    corrId: string
-    mcp?: ConfigType.Info["mcp"]
-    depth?: number
-    maxDepth?: number
-    leaseMs?: number
-    renewalIntervalMs?: number
-    ownerId?: string
+    swarmId: string; parentSessionId: SessionID; description: string; prompt: string; caller: Agent.Info; subagent: Agent.Info; actor: string; corrId: string
+    mcp?: ConfigType.Info["mcp"]; depth?: number; maxDepth?: number; leaseMs?: number; renewalIntervalMs?: number; ownerId?: string
   }
-
   export type PlannedResult = { taskId: string; sessionId: string; agent: string }
 
-  export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput): Effect.fn.Return<PlannedResult> {
+  export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
     const drain = yield* SessionDrain.Service
@@ -85,15 +62,7 @@ export namespace SwarmRuntime {
     if (!parent.model) return yield* Effect.fail(new InvalidInput({ message: `parent session ${parent.id} has no model` }))
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
     const cfg = yield* config.get()
-    const resolved = yield* KiloTask.resolveModel({
-      name: plan.agent,
-      agent: input.subagent,
-      config: cfg,
-      parent: { modelID: parent.model.id, providerID: parent.model.providerID },
-      variant: input.subagent.variant,
-      provider,
-      selection: {},
-    })
+    const resolved = yield* KiloTask.resolveModel({ name: plan.agent, agent: input.subagent, config: cfg, parent: { modelID: parent.model.id, providerID: parent.model.providerID }, variant: input.subagent.variant, provider, selection: {} })
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
 
     const execute = Effect.gen(function* () {
@@ -102,24 +71,13 @@ export namespace SwarmRuntime {
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
       const work = Effect.gen(function* () {
-        yield* prompt.prompt({
-          messageID: MessageID.ascending(),
-          sessionID: child.id,
-          model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID },
-          variant: resolved.variant,
-          agent: plan.agent,
-          tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) },
-          parts: [{ type: "text", text: input.prompt }],
-        })
+        yield* prompt.prompt({ messageID: MessageID.ascending(), sessionID: child.id, model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID }, variant: resolved.variant, agent: plan.agent, tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) }, parts: [{ type: "text", text: input.prompt }] })
         yield* drain.wait(child.id)
       }).pipe(Effect.asVoid)
       yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, work })
       return { taskId, sessionId: child.id, agent: plan.agent }
     })
-
-    return yield* execute.pipe(
-      Effect.catchAll((error) => SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(Effect.ignore, Effect.andThen(Effect.fail(error)))),
-    )
+    return yield* execute.pipe(Effect.catchAll((error) => SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(Effect.ignore, Effect.andThen(Effect.fail(error)))))
   })
 
   export const runPlannedBatch = Effect.fn("SwarmRuntime.runPlannedBatch")(function* (input: { workers: readonly PlannedInput[]; concurrency?: number }) {
