@@ -89,7 +89,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           reviewerAgent: reviewEntry.result.agent,
           corrId: `${base}_review_commit_${reviewEntry.index}`,
           report,
-        }).pipe(Effect.catchAll((error) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [errorText(error)], evidence: [], checks: [] })))
+        }).pipe(Effect.catchCause((cause) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [Cause.pretty(cause)], evidence: [], checks: [] })))
 
         let acceptanceFailure: string | undefined
         if (recorded.accepted) {
@@ -128,7 +128,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       return {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
-          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
+          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
           ...entries.flatMap((entry, index) => { const review = reviews.find((item) => item.workerTaskId === entry.taskId); return [`\n## ${index + 1}. ${entry.role}`, entry.finding, `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`, ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.join("; ")}`] : []), `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`] }),
           ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
