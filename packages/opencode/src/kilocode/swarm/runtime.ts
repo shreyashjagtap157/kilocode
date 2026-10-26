@@ -50,6 +50,9 @@ export namespace SwarmRuntime {
     const provider = yield* Provider.Service
     const parent = yield* sessions.get(input.parentSessionId)
     if (!parent.model) return yield* Effect.fail(new InvalidInput({ message: `parent session ${parent.id} has no model` }))
+    // Root sessions create root tasks. A currently executing swarm worker creates
+    // true child tasks tied to its active fenced task, never to the session ID.
+    const parentTaskId = yield* SwarmWorker.parentTaskForSession(parent.id)
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
     const executionPlan = input.readOnly
       ? {
@@ -61,7 +64,7 @@ export namespace SwarmRuntime {
       : plan
     const cfg = yield* config.get()
     const resolved = yield* KiloTask.resolveModel({ name: executionPlan.agent, agent: input.subagent, config: cfg, parent: { modelID: parent.model.id, providerID: parent.model.providerID }, variant: input.subagent.variant, provider, selection: {} })
-    const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
+    const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parentTaskId, actor: input.actor, corrId: input.corrId })
 
     const execute = Effect.gen(function* () {
       const child = yield* sessions.create({
