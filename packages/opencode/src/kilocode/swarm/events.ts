@@ -46,7 +46,7 @@ export const SwarmWorkerBound = EventV2.define({
 
 const ReviewFields = {
   taskId: SwarmTaskID, swarmId: Schema.String, reviewerTaskId: SwarmTaskID, reviewerSessionId: Schema.String,
-  reviewerAgent: Schema.String, summary: Schema.String, evidenceJson: Schema.String, checksJson: Schema.String,
+  reviewerAgent: Schema.String, summary: Schema.String, evidenceJson: Schema.String, executionEvidenceJson: Schema.String, checksJson: Schema.String,
   blockingFindingsJson: Schema.String, uncertaintiesJson: Schema.String, corrId: CorrelationID,
 } as const
 
