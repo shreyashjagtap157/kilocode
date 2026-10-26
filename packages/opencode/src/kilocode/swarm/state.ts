@@ -11,6 +11,7 @@ import { SwarmTaskID, TaskState, Lifecycle, TerminalStates, ActorID, Correlation
 import { SwarmTable, SwarmTaskTable, SwarmTaskTransitionTable, SwarmIdempotencyTable } from "@opencode-ai/core/kilocode/swarm/sql"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SwarmTaskCreated, SwarmTaskTransitioned, SwarmTaskCancelRequested } from "./events"
+import { SwarmVerification } from "./verification"
 
 const log = Log.create({ service: "swarm.state" })
 
@@ -216,13 +217,69 @@ export namespace SwarmState {
   // Authoritative qualification gate. Keep this check in the state/CAS boundary,
   // not just in the swarm tool, so every caller must satisfy the same invariant.
   // This is also rechecked inside EventV2's commit hook to close the preflight race.
-  const assertAcceptance = (db: DB, taskId: string) =>
+  const assertAcceptance = (db: DB, taskId: string, swarmId: string) =>
     Effect.gen(function* () {
+      // The latest review outcome is authoritative. A stale earlier PASS must not
+      // override a later failed/inconclusive review.
       const review = yield* db
-        .get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'`)
+        .get<{ type: string; data: Record<string, unknown> | string }>(sql`
+          SELECT type, data FROM event
+          WHERE aggregate_id = ${taskId}
+            AND (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+          ORDER BY seq DESC LIMIT 1
+        `)
         .pipe(Effect.orDie)
-      if (!review || review.count < 1) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has no durable passing independent review` }))
+      if (!review || !review.type.startsWith("swarm.task.review_passed")) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has no latest passing independent review` }))
+      }
+
+      let data: Record<string, unknown> | undefined
+      try {
+        const decoded = typeof review.data === "string" ? JSON.parse(review.data) : review.data
+        if (typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)) data = decoded as Record<string, unknown>
+      } catch {
+        data = undefined
+      }
+      if (
+        !data ||
+        data.taskId !== taskId ||
+        data.swarmId !== swarmId ||
+        data.verdict !== "pass" ||
+        typeof data.reviewerTaskId !== "string" ||
+        data.reviewerTaskId === taskId ||
+        typeof data.reviewerSessionId !== "string"
+      ) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has malformed or non-independent review provenance` }))
+      }
+
+      const reviewer = yield* db
+        .get<{ id: string; swarm_id: string; state: string }>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${data.reviewerTaskId}`)
+        .pipe(Effect.orDie)
+      const binding = yield* db
+        .get<{ session_id: string; swarm_id: string }>(sql`SELECT session_id, swarm_id FROM kilo_swarm_worker_binding WHERE task_id = ${data.reviewerTaskId}`)
+        .pipe(Effect.orDie)
+      if (
+        !reviewer ||
+        reviewer.swarm_id !== swarmId ||
+        !["reviewing", "accepted", "integrated"].includes(reviewer.state) ||
+        !binding ||
+        binding.swarm_id !== swarmId ||
+        binding.session_id !== data.reviewerSessionId
+      ) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review was not produced by a currently bound independent reviewer` }))
+      }
+
+      const evidenceProblems = SwarmVerification.qualificationProblems({
+        summary: data.summary,
+        evidenceJson: data.evidenceJson,
+        checksJson: data.checksJson,
+        blockingFindingsJson: data.blockingFindingsJson,
+        uncertaintiesJson: data.uncertaintiesJson,
+        executionEvidenceJson: data.executionEvidenceJson,
+        reviewerSessionId: data.reviewerSessionId,
+      })
+      if (evidenceProblems.length > 0) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review evidence is invalid: ${evidenceProblems[0]}` }))
       }
     })
 
@@ -266,7 +323,7 @@ export namespace SwarmState {
     if (task.cancel_requested !== 0 && input.to !== "cancelled") {
       return yield* Effect.fail(new CancelConflict({ message: `task ${input.taskId} has a cancellation request and may only transition to cancelled` }))
     }
-    if (input.to === "accepted") yield* assertAcceptance(db, input.taskId)
+    if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id)
 
     const now = Date.now()
     const nextVersion = task.version + 1
@@ -295,11 +352,12 @@ export namespace SwarmState {
             Effect.gen(function* () {
               // Revalidate the snapshot under EventV2's immediate transaction.
               // Claim acquisition also advances fence without changing task version.
-              const current = yield* db.get<{ state: string; version: number; fence: number; cancel_requested: number }>(sql`
-                SELECT state, version, fence, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
+              const current = yield* db.get<{ swarm_id: string; state: string; version: number; fence: number; cancel_requested: number }>(sql`
+                SELECT swarm_id, state, version, fence, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}
               `)
               if (
                 !current ||
+                current.swarm_id !== task.swarm_id ||
                 current.state !== from ||
                 current.version !== task.version ||
                 current.fence !== task.fence ||
@@ -313,7 +371,7 @@ export namespace SwarmState {
               if (!currentAllowed || !currentAllowed.includes(input.to)) {
                 return yield* Effect.die(new IllegalTransition({ message: `illegal transition ${current.state} -> ${input.to}` }))
               }
-              if (input.to === "accepted") yield* assertAcceptance(db, input.taskId).pipe(Effect.orDie)
+              if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id).pipe(Effect.orDie)
               const updated = yield* db.get<{ id: string }>(sql`
                 UPDATE kilo_swarm_task
                 SET state = ${input.to}, version = ${nextVersion}, time_updated = ${now}
