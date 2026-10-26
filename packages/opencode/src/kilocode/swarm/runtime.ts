@@ -52,7 +52,12 @@ export namespace SwarmRuntime {
     if (!parent.model) return yield* Effect.fail(new InvalidInput({ message: `parent session ${parent.id} has no model` }))
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
     const executionPlan = input.readOnly
-      ? { ...plan, permission: DynamicAgentFactory.intersect(plan.permission, [{ permission: "edit", pattern: "*", action: "deny" as const }]), canTask: false, canTodo: false }
+      ? {
+          ...plan,
+          permission: DynamicAgentFactory.intersect(plan.permission, DynamicAgentFactory.readOnlyPermissions),
+          canTask: false,
+          canTodo: false,
+        }
       : plan
     const cfg = yield* config.get()
     const resolved = yield* KiloTask.resolveModel({ name: executionPlan.agent, agent: input.subagent, config: cfg, parent: { modelID: parent.model.id, providerID: parent.model.providerID }, variant: input.subagent.variant, provider, selection: {} })
