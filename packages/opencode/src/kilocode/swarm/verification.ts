@@ -268,7 +268,12 @@ export namespace SwarmVerification {
     if (invalidExecution) return yield* Effect.fail(new InvalidReview({ message: "host execution evidence is malformed or belongs to another session" }))
 
     const decoded = decode(input.report)
-    const failures = problems(decoded.report, decoded.malformed, executions, input.reviewerSessionId)
+    const structuralProblems = problems(decoded.report, decoded.malformed, executions, input.reviewerSessionId)
+    const executionProblems = yield* hostExecutionProblems(db, {
+      executionEvidenceJson: JSON.stringify(executions),
+      reviewerSessionId: input.reviewerSessionId,
+    })
+    const failures = [...structuralProblems, ...executionProblems]
     const verdict = decoded.report.verdict === "pass" && failures.length ? "inconclusive" : decoded.report.verdict
     const blocking = [...new Set([...decoded.report.blockingFindings, ...failures])]
     const payload = {
