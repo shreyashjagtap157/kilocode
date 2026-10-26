@@ -35,14 +35,12 @@ export namespace SwarmRuntime {
     return { taskId: admission.taskId, sessionId: input.sessionId }
   })
 
-  /**
-   * Cancel a swarm task and, when a worker session is already bound, interrupt
-   * the actual Kilo execution. Durable cancellation is committed before the
-   * interrupt so a racing worker immediately loses renewal/completion authority.
-   */
+  /** Cancel a swarm task and interrupt its actual Kilo execution when one is bound. */
   export const cancel = Effect.fn("SwarmRuntime.cancel")(function* (input: { taskId: string; actor: string; corrId: string; idemKey?: string }) {
     const task = yield* SwarmState.getTask(input.taskId)
-    if (task.state === "cancelled") return { taskId: input.taskId, sessionId: undefined, alreadyTerminal: false }
+    if (["accepted", "rejected", "integrated", "failed", "cancelled", "stale", "quarantined"].includes(task.state)) {
+      return { taskId: input.taskId, sessionId: undefined, alreadyTerminal: true }
+    }
     const result = yield* SwarmState.requestCancel(input)
     const binding = yield* SwarmWorker.getBinding(input.taskId)
     if (binding && binding.state === "bound") {
