@@ -63,10 +63,23 @@ export namespace SwarmWorker {
       if (input.prepare) yield* input.prepare
       yield* execution.resume(input.sessionId as any)
     })
-    return yield* SwarmSupervisor.supervise(
+    const supervised = SwarmSupervisor.supervise(
       { taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, leaseMs, intervalMs: renewalIntervalMs },
       work,
-    ).pipe(
+    )
+
+    // Any execution/supervision failure attempts to move a still-owned running task
+    // to failed and releases only the exact lease/fence that produced the failure.
+    // Cleanup is also performed after a stale completion assertion fails, preventing
+    // an orphaned reservation from surviving until its timeout.
+    return yield* supervised.pipe(
+      Effect.flatMap(() => SwarmDispatcher.assertCompletionOwnership({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })),
+      Effect.flatMap(() => SwarmState.getTask(input.taskId)),
+      Effect.flatMap((task) => {
+        if (task.state !== "running") return Effect.fail(new ExecutionConflict({ message: `task ${input.taskId} changed during execution (${task.state})` }))
+        return SwarmState.transition({ taskId: input.taskId, to: "reviewing", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
+      }),
+      Effect.tap(() => SwarmClaims.release({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, corrId: input.corrId }).pipe(Effect.catchAll(() => Effect.void))),
       Effect.catchAll((error) => Effect.gen(function* () {
         const task = yield* SwarmState.getTask(input.taskId)
         if (task.state === "running" && task.cancel_requested === 0) {
@@ -74,14 +87,6 @@ export namespace SwarmWorker {
         }
         yield* SwarmClaims.release({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, corrId: input.corrId }).pipe(Effect.catchAll(() => Effect.void))
         return yield* Effect.fail(error)
-      })),
-    ).pipe(
-      Effect.tap(() => Effect.gen(function* () {
-        yield* SwarmDispatcher.assertCompletionOwnership({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
-        const task = yield* SwarmState.getTask(input.taskId)
-        if (task.state !== "running") return yield* Effect.fail(new ExecutionConflict({ message: `task ${input.taskId} changed during execution (${task.state})` }))
-        yield* SwarmState.transition({ taskId: input.taskId, to: "reviewing", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
-        yield* SwarmClaims.release({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, corrId: input.corrId }).pipe(Effect.catchAll(() => Effect.void))
       })),
     )
   })
