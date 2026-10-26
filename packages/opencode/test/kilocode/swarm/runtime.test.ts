@@ -43,12 +43,18 @@ const sessionInfo = (id: SessionID, permission: Session.Info["permission"], mode
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }) as Session.Info
 
-const use = (effect: any, file: string, run?: () => Effect.Effect<void>, onCreate?: (input: unknown) => void) => {
+const use = (
+  effect: any,
+  file: string,
+  run?: () => Effect.Effect<void>,
+  onCreate?: (input: unknown) => void,
+  parentPermission: Session.Info["permission"] = Permission.fromConfig({ bash: "deny" }),
+) => {
   const db = Database.layerFromPath(file)
   const ev = EventV2.layerWith().pipe(Layer.provide(db))
   let childNumber = 0
   const sessions = Layer.succeed(Session.Service, {
-    get: () => Effect.succeed(sessionInfo(parentID, Permission.fromConfig({ bash: "deny" }))),
+    get: () => Effect.succeed(sessionInfo(parentID, parentPermission)),
     create: (input: unknown) => {
       onCreate?.(input)
       childNumber += 1
@@ -255,4 +261,45 @@ describe("SwarmRuntime planned worker path (M3)", () => {
       (tmp as any).path + "/swarm.db",
     )
   })
+
+  test("read-only reviewer session enforces its permission ceiling", async () => {
+    await using tmp = await tmpdir()
+    let created: any
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const caller = agent("main", Permission.fromConfig({ "*": "allow" }), "primary")
+        const reviewer = agent("reviewer", Permission.fromConfig({ "*": "allow" }))
+        const result = yield* SwarmRuntime.runPlanned({
+          swarmId,
+          parentSessionId: parentID,
+          description: "independent review",
+          prompt: "Review an implementation without modifying it.",
+          caller,
+          subagent: reviewer,
+          actor: "act_readonly_review",
+          corrId: "cor_readonly_review" as any,
+          readOnly: true,
+        })
+        expect(result.agent).toBe("reviewer")
+        expect(created).toBeDefined()
+        const permission = created.permission as Permission.Ruleset
+        expect(Permission.evaluate("read", "src/example.ts", permission).action).toBe("allow")
+        expect(Permission.evaluate("bash", "bun test test/example.test.ts", permission).action).toBe("allow")
+        expect(Permission.evaluate("bash", "git status", permission).action).toBe("allow")
+        expect(Permission.evaluate("bash", "rm -rf src", permission).action).toBe("deny")
+        expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", permission).action).toBe("deny")
+        expect(Permission.evaluate("edit", "src/example.ts", permission).action).toBe("deny")
+        expect(Permission.evaluate("write", "src/example.ts", permission).action).toBe("deny")
+        expect(Permission.evaluate("apply_patch", "*", permission).action).toBe("deny")
+        expect(Permission.evaluate("task", "*", permission).action).toBe("deny")
+        expect(Permission.evaluate("todowrite", "*", permission).action).toBe("deny")
+      }),
+      (tmp as any).path + "/swarm.db",
+      undefined,
+      (input) => { created = input },
+      Permission.fromConfig({ "*": "allow" }),
+    )
+  })
+
 })
