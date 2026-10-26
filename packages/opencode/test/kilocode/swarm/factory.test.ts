@@ -169,4 +169,17 @@ describe("DynamicAgentFactory", () => {
     expect(Permission.evaluate("edit", "src/a.ts", original, policy).action).toBe("deny")
   })
 
+  test("read-only reviewer policy preserves command-specific denials", () => {
+    const original = Permission.fromConfig({
+      "*": "allow",
+      bash: { "cat secrets/**": "deny" },
+    })
+    const policy = DynamicAgentFactory.readOnlyPermissions({ agentPermission: original, ceiling: [] })
+
+    // A broad safe-command pattern must not override a narrower user deny.
+    expect(Permission.evaluate("bash", "cat secrets/private.txt", original, policy).action).toBe("deny")
+    // Unrelated validation remains possible because it is already allowed by the agent.
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts", original, policy).action).toBe("allow")
+  })
+
 })
