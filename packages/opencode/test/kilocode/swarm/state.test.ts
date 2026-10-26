@@ -7,6 +7,7 @@ import { sql } from "drizzle-orm"
 import { Layer } from "effect"
 import { SwarmState } from "@/kilocode/swarm/state"
 import { SwarmTaskCancelRequested, SwarmTaskClaimed, SwarmTaskTransitioned } from "@/kilocode/swarm/events"
+import { SwarmVerification } from "@/kilocode/swarm/verification"
 import { SwarmClaims } from "@/kilocode/swarm/claims"
 import { SwarmRecovery } from "@/kilocode/swarm/recovery"
 
