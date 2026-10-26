@@ -2,33 +2,52 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Permission } from "@/permission"
+import * as KiloAgent from "@/kilocode/agent"
 import { ModesMigrator } from "@/kilocode/modes-migrator"
 
 describe("Swarm execution mode installation", () => {
-  test("project .kilocodemodes installs Swarm as a primary team agent", async () => {
+  test("native Swarm is globally registered and legacy project definitions do not shadow it", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kilo-swarm-mode-"))
     try {
       const source = await readFile(path.resolve(import.meta.dir, "../../../../../.kilocodemodes"), "utf8")
       await writeFile(path.join(root, ".kilocodemodes"), source)
 
-      const result = await ModesMigrator.migrate({ projectDir: root, skipGlobalPaths: true })
-      const swarm = result.agents.swarm
+      const migrated = await ModesMigrator.migrate({ projectDir: root, skipGlobalPaths: true })
+      expect(migrated.skipped.some((item) => item.slug === "swarm")).toBe(true)
+      expect(migrated.agents.swarm).toBeUndefined()
 
-      expect(result.skipped.some((item) => item.slug === "swarm")).toBe(false)
+      const empty = Permission.fromConfig({})
+      const agents: Record<string, any> = {
+        code: {
+          name: "code",
+          description: "Base coding agent",
+          mode: "primary",
+          native: true,
+          permission: empty,
+          options: {},
+        },
+      }
+      KiloAgent.patchAgents(
+        agents,
+        empty,
+        empty,
+        { mcpRules: {}, defaultsPatch: empty, board: true },
+        root,
+        [],
+      )
+
+      const swarm = agents.swarm
       expect(swarm).toBeDefined()
+      expect(swarm.name).toBe("swarm")
       expect(swarm.mode).toBe("primary")
-      expect(swarm.description).toContain("Durable multi-agent orchestration")
-      expect(swarm.prompt).toContain("durable swarm tool")
-      expect(swarm.prompt).toContain("shared agent board")
+      expect(swarm.native).toBe(true)
+      expect(swarm.prompt).toContain("durable `swarm` tool")
+      expect(swarm.prompt).toContain("shared Kilo agent board")
       expect(swarm.prompt).toContain("post useful discoveries")
-      expect(swarm.permission).toMatchObject({
-        read: "allow",
-        edit: "allow",
-        bash: "allow",
-        swarm: "allow",
-        board_read: "allow",
-        board_post: "allow",
-      })
+      for (const permission of ["swarm", "board_read", "board_post"]) {
+        expect(swarm.permission.some((rule: any) => rule.permission === permission && rule.action === "allow")).toBe(true)
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }
