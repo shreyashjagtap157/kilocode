@@ -1149,4 +1149,34 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("host execution evidence rejects failed exits and mismatched output hashes", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    const command = "bun test test/kilocode/swarm/state.test.ts"
+    await use(
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const failedSession = "ses_host_exit_mismatch"
+        yield* seedHostCommandPart(db, { sessionId: failedSession, command, exitCode: 1 })
+        const failed = yield* SwarmVerification.hostExecutionProblems(db, {
+          executionEvidenceJson: JSON.stringify([verifiedCommand(command, failedSession)]),
+          reviewerSessionId: failedSession,
+        })
+        expect(failed.length).toBeGreaterThan(0)
+        expect(failed[0]).toContain("exit 0")
+
+        const hashSession = "ses_host_output_mismatch"
+        yield* seedHostCommandPart(db, { sessionId: hashSession, command, output: "trusted output" })
+        const mismatchedHash = yield* SwarmVerification.hostExecutionProblems(db, {
+          executionEvidenceJson: JSON.stringify([verifiedCommand(command, hashSession, 0, "forged output")]),
+          reviewerSessionId: hashSession,
+        })
+        expect(mismatchedHash.length).toBeGreaterThan(0)
+        expect(mismatchedHash[0]).toContain("same output hash")
+      }),
+      file,
+    )
+  })
+
 })
