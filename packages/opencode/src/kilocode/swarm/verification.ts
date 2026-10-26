@@ -102,10 +102,37 @@ export namespace SwarmVerification {
       checksJson: JSON.stringify(decoded.report.checks), blockingFindingsJson: JSON.stringify(blocking),
       uncertaintiesJson: JSON.stringify(decoded.report.uncertainties), corrId: input.corrId as any,
     }
+    // The preflight read above provides useful error messages; revalidate both task
+    // identities and states inside EventV2's transaction so a concurrent state change
+    // cannot append a passing review for a task/reviewer that is no longer eligible.
+    const commit = () =>
+      Effect.gen(function* () {
+        const currentTarget = yield* db
+          .get<TaskRow>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${input.taskId}`)
+          .pipe(Effect.orDie)
+        const currentReviewer = yield* db
+          .get<TaskRow>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${input.reviewerTaskId}`)
+          .pipe(Effect.orDie)
+        if (
+          !currentTarget ||
+          !currentReviewer ||
+          currentTarget.id === currentReviewer.id ||
+          currentTarget.swarm_id !== preflight.swarm_id ||
+          currentReviewer.swarm_id !== preflight.swarm_id ||
+          currentTarget.state !== "reviewing" ||
+          currentReviewer.state !== "reviewing"
+        ) {
+          return yield* Effect.die(new InvalidReview({ message: "review target or reviewer changed before the review event committed" }))
+        }
+      })
     if (verdict === "pass") {
-      yield* events.publish(SwarmTaskReviewPassed, { ...payload, verdict: "pass" })
+      yield* events.publish(SwarmTaskReviewPassed, { ...payload, verdict: "pass" }, { commit })
     } else {
-      yield* events.publish(SwarmTaskReviewBlocked, { ...payload, verdict: verdict === "fail" ? "fail" : "inconclusive" })
+      yield* events.publish(
+        SwarmTaskReviewBlocked,
+        { ...payload, verdict: verdict === "fail" ? "fail" : "inconclusive" },
+        { commit },
+      )
     }
     return { verdict, accepted: verdict === "pass", blockingFindings: blocking, evidence: decoded.report.evidence, checks: decoded.report.checks }
   })
