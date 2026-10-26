@@ -413,7 +413,7 @@ export namespace SwarmVerification {
         { commit },
       )
     }
-    return { verdict, accepted: verdict === "pass", blockingFindings: blocking, evidence: decoded.report.evidence, checks: decoded.report.checks }
+    return { verdict, accepted: verdict === "pass", summary: decoded.report.summary, blockingFindings: blocking, evidence: decoded.report.evidence, checks: decoded.report.checks }
   })
 
 
