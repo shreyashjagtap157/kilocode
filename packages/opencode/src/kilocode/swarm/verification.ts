@@ -90,6 +90,12 @@ export namespace SwarmVerification {
     if (target.id === reviewer.id) return yield* Effect.fail(new InvalidReview({ message: "a task cannot review itself" }))
     if (target.swarm_id !== reviewer.swarm_id) return yield* Effect.fail(new InvalidReview({ message: "reviewer must belong to the same swarm" }))
     if (target.state !== "reviewing" || reviewer.state !== "reviewing") return yield* Effect.fail(new InvalidReview({ message: "target and reviewer must both be in reviewing state" }))
+    const reviewerBinding = yield* db
+      .get<{ session_id: string; swarm_id: string }>(sql`SELECT session_id, swarm_id FROM kilo_swarm_worker_binding WHERE task_id = ${input.reviewerTaskId}`)
+      .pipe(Effect.orDie)
+    if (!reviewerBinding || reviewerBinding.session_id !== input.reviewerSessionId || reviewerBinding.swarm_id !== reviewer.swarm_id) {
+      return yield* Effect.fail(new InvalidReview({ message: "reviewer session is not the durable session bound to the reviewer task" }))
+    }
 
     const decoded = decode(input.report)
     const failures = problems(decoded.report, decoded.malformed)
@@ -113,9 +119,15 @@ export namespace SwarmVerification {
         const currentReviewer = yield* db
           .get<TaskRow>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${input.reviewerTaskId}`)
           .pipe(Effect.orDie)
+        const currentReviewerBinding = yield* db
+          .get<{ session_id: string; swarm_id: string }>(sql`SELECT session_id, swarm_id FROM kilo_swarm_worker_binding WHERE task_id = ${input.reviewerTaskId}`)
+          .pipe(Effect.orDie)
         if (
           !currentTarget ||
           !currentReviewer ||
+          !currentReviewerBinding ||
+          currentReviewerBinding.session_id !== input.reviewerSessionId ||
+          currentReviewerBinding.swarm_id !== target.swarm_id ||
           currentTarget.id === currentReviewer.id ||
           currentTarget.swarm_id !== target.swarm_id ||
           currentReviewer.swarm_id !== target.swarm_id ||
