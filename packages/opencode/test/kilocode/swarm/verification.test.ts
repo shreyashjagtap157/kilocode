@@ -17,7 +17,6 @@ describe("SwarmVerification command evidence", () => {
       "tsc --noEmit",
       "eslint src",
       "deno test",
-      "cd packages/opencode && bun test test/kilocode/swarm",
       "CI=1 bun run typecheck",
     ]
     for (const command of valid) {
@@ -35,6 +34,8 @@ describe("SwarmVerification command evidence", () => {
       "cat test-results.txt",
       "echo check",
       "sleep 1; printf 'validation passed'",
+      "true || bun test test/kilocode/swarm/state.test.ts",
+      "bun test test/kilocode/swarm/state.test.ts; echo done",
       'echo "&& bun test"',
     ]
     for (const command of invalid) {
