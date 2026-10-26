@@ -750,7 +750,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_independent_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_independent_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* seedHostCommandPart(db, {
           sessionId: "ses_independent_reviewer",
@@ -807,7 +807,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* seedHostCommandPart(db, {
           sessionId: "ses_racing_reviewer",
@@ -873,7 +873,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* seedHostCommandPart(db, {
           sessionId: "ses_racing_reviewer",
@@ -934,7 +934,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_evidence_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_evidence_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
 
         const recorded = yield* SwarmVerification.recordReview({
@@ -989,7 +989,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_bound_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_bound_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
 
         const attempt = yield* Effect.exit(SwarmVerification.recordReview({
@@ -1039,7 +1039,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_direct_review"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_direct_review"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         const events = yield* EventV2.Service
         // A caller can forge structurally valid evidence and a passing review event.
@@ -1094,7 +1094,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* seedHostCommandPart(db, {
           sessionId: "ses_latest_reviewer",
@@ -1216,7 +1216,7 @@ describe("swarm state (M2)", () => {
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
-          VALUES (${reviewerTaskId}, ${swarmId}, ${reviewerSessionId}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+          VALUES (${reviewerTaskId}, ${swarmId}, ${reviewerSessionId}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* seedHostCommandPart(db, { sessionId: reviewerSessionId, command })
         const review = yield* SwarmVerification.recordReview({
