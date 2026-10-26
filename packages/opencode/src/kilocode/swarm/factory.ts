@@ -25,6 +25,7 @@ const readOnlyShellCommands = [
   "Measure-Object*",
   "Get-Item*",
   "Get-FileHash*",
+  "Invoke-Pester*",
   "Resolve-Path*",
   "Test-Path*",
 
