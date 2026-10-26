@@ -284,16 +284,18 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         expect(result.agent).toBe("reviewer")
         expect(created).toBeDefined()
         const permission = created.permission as Permission.Ruleset
-        expect(Permission.evaluate("read", "src/example.ts", permission).action).toBe("allow")
-        expect(Permission.evaluate("bash", "bun test test/example.test.ts", permission).action).toBe("allow")
-        expect(Permission.evaluate("bash", "git status", permission).action).toBe("allow")
-        expect(Permission.evaluate("bash", "rm -rf src", permission).action).toBe("deny")
-        expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", permission).action).toBe("deny")
-        expect(Permission.evaluate("edit", "src/example.ts", permission).action).toBe("deny")
-        expect(Permission.evaluate("write", "src/example.ts", permission).action).toBe("deny")
-        expect(Permission.evaluate("apply_patch", "*", permission).action).toBe("deny")
-        expect(Permission.evaluate("task", "*", permission).action).toBe("deny")
-        expect(Permission.evaluate("todowrite", "*", permission).action).toBe("deny")
+        // Evaluate the original agent's permissions followed by the session's
+        // restrictive override, matching the order used by Kilo's permission gate.
+        expect(Permission.evaluate("read", "src/example.ts", reviewer.permission, permission).action).toBe("allow")
+        expect(Permission.evaluate("bash", "bun test test/example.test.ts", reviewer.permission, permission).action).toBe("allow")
+        expect(Permission.evaluate("bash", "git status", reviewer.permission, permission).action).toBe("allow")
+        expect(Permission.evaluate("bash", "rm -rf src", reviewer.permission, permission).action).toBe("deny")
+        expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", reviewer.permission, permission).action).toBe("deny")
+        expect(Permission.evaluate("edit", "src/example.ts", reviewer.permission, permission).action).toBe("deny")
+        expect(Permission.evaluate("write", "src/example.ts", reviewer.permission, permission).action).toBe("deny")
+        expect(Permission.evaluate("apply_patch", "*", reviewer.permission, permission).action).toBe("deny")
+        expect(Permission.evaluate("task", "*", reviewer.permission, permission).action).toBe("deny")
+        expect(Permission.evaluate("todowrite", "*", reviewer.permission, permission).action).toBe("deny")
       }),
       (tmp as any).path + "/swarm.db",
       undefined,
