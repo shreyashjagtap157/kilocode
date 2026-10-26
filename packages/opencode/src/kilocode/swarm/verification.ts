@@ -274,7 +274,6 @@ export namespace SwarmVerification {
           command === execution.command &&
           normalizeCommand(command) === normalizeCommand(execution.command) &&
           typeof exitCode === "number" &&
-          exitCode === 0 &&
           exitCode === execution.exitCode &&
           typeof output === "string" &&
           createHash("sha256").update(output).digest("hex") === execution.outputSha256
