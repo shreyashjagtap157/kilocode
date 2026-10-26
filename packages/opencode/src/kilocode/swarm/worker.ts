@@ -9,17 +9,12 @@ import { SwarmDispatcher } from "./dispatcher"
 import { SwarmState } from "./state"
 import { SwarmSupervisor } from "./supervisor"
 import { SwarmWorkerBound } from "./events"
+import { SwarmClaims } from "./claims"
 
 export namespace SwarmWorker {
   export class ExecutionConflict extends Schema.TaggedErrorClass<ExecutionConflict>()("SwarmWorker.ExecutionConflict", { message: Schema.String }) {}
 
-  export const bindSession = Effect.fn("SwarmWorker.bindSession")(function* (input: {
-    taskId: string
-    sessionId: string
-    leaseId: string
-    fence: number
-    corrId?: string
-  }) {
+  export const bindSession = Effect.fn("SwarmWorker.bindSession")(function* (input: { taskId: string; sessionId: string; leaseId: string; fence: number; corrId?: string }) {
     const { db } = yield* Database.Service
     const events = yield* EventV2.Service
     const task = yield* SwarmState.getTask(input.taskId)
@@ -47,18 +42,8 @@ export namespace SwarmWorker {
 
   /** Resume an admitted session while a lease supervisor renews ownership. */
   export const resumeSession = Effect.fn("SwarmWorker.resumeSession")(function* (input: {
-    taskId: string
-    sessionId: string
-    leaseId: string
-    fence: number
-    actor: string
-    corrId: string
-    leaseMs?: number
-    renewalIntervalMs?: number
-    /** Optional work executed after durable admission and before the normal session resume. */
-    prepare?: Effect.Effect<void>
-    /** Optional real session-driving work. When supplied, this must include the provider-run drain/wait. */
-    work?: Effect.Effect<void>
+    taskId: string; sessionId: string; leaseId: string; fence: number; actor: string; corrId: string; leaseMs?: number; renewalIntervalMs?: number
+    prepare?: Effect.Effect<void>; work?: Effect.Effect<void>
   }) {
     yield* SwarmDispatcher.beforeExecution({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence })
     const existing = yield* getBinding(input.taskId)
@@ -78,11 +63,11 @@ export namespace SwarmWorker {
       work,
     ).pipe(
       Effect.catchAll((error) => Effect.gen(function* () {
-        yield* SwarmDispatcher.assertCompletionOwnership({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence }).pipe(Effect.catchAll(() => Effect.void))
         const task = yield* SwarmState.getTask(input.taskId)
         if (task.state === "running" && task.cancel_requested === 0) {
           yield* SwarmState.transition({ taskId: input.taskId, to: "failed", expectedVersion: task.version, actor: input.actor, corrId: input.corrId }).pipe(Effect.catchAll(() => Effect.void))
         }
+        yield* SwarmClaims.release({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, corrId: input.corrId }).pipe(Effect.catchAll(() => Effect.void))
         return yield* Effect.fail(error)
       })),
     ).pipe(
@@ -91,6 +76,7 @@ export namespace SwarmWorker {
         const task = yield* SwarmState.getTask(input.taskId)
         if (task.state !== "running") return yield* Effect.fail(new ExecutionConflict({ message: `task ${input.taskId} changed during execution (${task.state})` }))
         yield* SwarmState.transition({ taskId: input.taskId, to: "reviewing", expectedVersion: task.version, actor: input.actor, corrId: input.corrId })
+        yield* SwarmClaims.release({ taskId: input.taskId, leaseId: input.leaseId, fence: input.fence, corrId: input.corrId }).pipe(Effect.catchAll(() => Effect.void))
       })),
     )
   })
