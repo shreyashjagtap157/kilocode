@@ -7,8 +7,11 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionID, MessageID } from "@/session/schema"
 import { SessionDrain } from "@/kilocode/session/drain"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { Config } from "@/config/config"
+import { Provider } from "@/provider/provider"
+import { KiloTask } from "@/kilocode/tool/task"
 import type { Agent } from "@/agent/agent"
-import type { Config } from "@/config/config"
+import type { Config as ConfigType } from "@/config/config"
 import { SwarmDispatcher } from "./dispatcher"
 import { SwarmState } from "./state"
 import { SwarmWorker } from "./worker"
@@ -62,7 +65,7 @@ export namespace SwarmRuntime {
     subagent: Agent.Info
     actor: string
     corrId: string
-    mcp?: Config.Info["mcp"]
+    mcp?: ConfigType.Info["mcp"]
     depth?: number
     maxDepth?: number
     leaseMs?: number
@@ -74,8 +77,21 @@ export namespace SwarmRuntime {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
     const drain = yield* SessionDrain.Service
+    const config = yield* Config.Service
+    const provider = yield* Provider.Service
     const parent = yield* sessions.get(input.parentSessionId)
+    if (!parent.model) return yield* Effect.fail(new InvalidInput({ message: `parent session ${parent.id} has no model` }))
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
+    const cfg = yield* config.get()
+    const resolved = yield* KiloTask.resolveModel({
+      name: plan.agent,
+      agent: input.subagent,
+      config: cfg,
+      parent: { modelID: parent.model.id, providerID: parent.model.providerID },
+      variant: input.subagent.variant,
+      provider,
+      selection: {},
+    })
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
 
     const execute = Effect.gen(function* () {
@@ -83,20 +99,17 @@ export namespace SwarmRuntime {
         parentID: parent.id,
         title: plan.title,
         agent: plan.agent,
-        model: input.subagent.model ? { id: input.subagent.model.modelID, providerID: input.subagent.model.providerID, variant: input.subagent.variant } : undefined,
         permission: plan.permission,
       })
       yield* drain.link(child.id, parent.id)
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
-      const model = child.model ?? parent.model
-      if (!model) return yield* Effect.fail(new InvalidInput({ message: `no model available for worker ${child.id}` }))
       const work = Effect.gen(function* () {
         yield* prompt.prompt({
           messageID: MessageID.ascending(),
           sessionID: child.id,
-          model: { modelID: model.id, providerID: model.providerID },
-          variant: model.variant,
+          model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID },
+          variant: resolved.variant,
           agent: plan.agent,
           tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) },
           parts: [{ type: "text", text: input.prompt }],
