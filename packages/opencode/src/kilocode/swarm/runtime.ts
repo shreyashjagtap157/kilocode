@@ -73,7 +73,9 @@ export namespace SwarmRuntime {
     ownerId?: string
   }
 
-  export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
+  export type PlannedResult = { taskId: string; sessionId: string; agent: string }
+
+  export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput): Effect.fn.Return<PlannedResult> {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
     const drain = yield* SessionDrain.Service
@@ -95,12 +97,7 @@ export namespace SwarmRuntime {
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
 
     const execute = Effect.gen(function* () {
-      const child = yield* sessions.create({
-        parentID: parent.id,
-        title: plan.title,
-        agent: plan.agent,
-        permission: plan.permission,
-      })
+      const child = yield* sessions.create({ parentID: parent.id, title: plan.title, agent: plan.agent, permission: plan.permission })
       yield* drain.link(child.id, parent.id)
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
@@ -121,12 +118,7 @@ export namespace SwarmRuntime {
     })
 
     return yield* execute.pipe(
-      Effect.catchAll((error) =>
-        SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(
-          Effect.ignore,
-          Effect.andThen(Effect.fail(error)),
-        ),
-      ),
+      Effect.catchAll((error) => SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(Effect.ignore, Effect.andThen(Effect.fail(error)))),
     )
   })
 
@@ -135,5 +127,17 @@ export namespace SwarmRuntime {
     const concurrency = input.concurrency ?? input.workers.length
     if (!Number.isSafeInteger(concurrency) || concurrency < 1) return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
     return yield* Effect.all(input.workers.map((worker) => runPlanned(worker)), { concurrency })
+  })
+
+  /** Run all workers independently, preserving successful workers when another worker fails. */
+  export const runPlannedBatchSettled = Effect.fn("SwarmRuntime.runPlannedBatchSettled")(function* (input: { workers: readonly PlannedInput[]; concurrency?: number }) {
+    if (input.workers.length === 0) return { completed: [], failed: [] as Array<{ index: number; error: unknown }> }
+    const concurrency = input.concurrency ?? input.workers.length
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1) return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
+    const outcomes = yield* Effect.forEach(input.workers, (worker) => Effect.either(runPlanned(worker)), { concurrency })
+    const completed: Array<{ index: number; result: PlannedResult }> = []
+    const failed: Array<{ index: number; error: unknown }> = []
+    outcomes.forEach((outcome, index) => outcome._tag === "Right" ? completed.push({ index, result: outcome.right }) : failed.push({ index, error: outcome.left }))
+    return { completed, failed }
   })
 }
