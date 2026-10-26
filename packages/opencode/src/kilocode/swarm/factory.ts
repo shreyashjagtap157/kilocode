@@ -102,10 +102,11 @@ const shellDeniedPrefixes = [
 ] as const
 
 /**
- * A reviewer may inspect files and run validation, but must not mutate source via
- * the shell, edit tools, or recursive task delegation. The explicit command
- * allowlist is still intersected with the original agent/parent permissions;
- * this ceiling never grants a capability that the caller did not already have.
+ * Restrict reviewer capabilities to inspection and explicit validation commands.
+ * Direct edit/write/patch tools, recursive delegation and general shell commands
+ * are denied. Validation commands still execute project-controlled code, so this
+ * is a tool-permission ceiling rather than an OS/filesystem sandbox. The policy is
+ * intersected with the original plan and never grants a capability it lacked.
  */
 export const readOnlyPermissions: Permission.Rule[] = [
   // Neutral default for capabilities not explicitly restricted below. Intersecting
