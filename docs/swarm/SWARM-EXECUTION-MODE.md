@@ -13,9 +13,18 @@ When `Swarm` is selected as the active primary mode, the agent is instructed to:
 5. sequence dependent work rather than creating conflicting concurrent edits;
 6. preserve successful findings when individual workers fail;
 7. use independent verification/testing for implementation tasks;
-8. synthesize worker findings and peer communications into one result.
+8. run a distinct reviewer wave with separate durable reviewer tasks/sessions;
+9. synthesize worker findings and peer communications into one result.
 
 The runtime continues to enforce the swarm's worker limit, permission ceiling, durable task admission, fencing, leases, cancellation, and bounded concurrency.
+
+## Review and acceptance semantics
+
+A reviewer runs in a different Kilo task/session from the worker being reviewed. Reviewer sessions have an explicit edit-deny permission and cannot delegate through the task/todo tools. The reviewer identity is resolved from the configured specialist team, but the current design does not guarantee a different model or provider; independence here means separate task/session and execution provenance, not guaranteed model diversity.
+
+The reviewer must return structured criteria and link evidence to each passing criterion. A successful command claimed in the report is not trusted by itself: the evidence must match the completed shell-tool part persisted by Kilo in that exact reviewer session, including the command, exit code, part/message/call identity, and output hash. The state transition to "accepted" rechecks the latest review result and this host-recorded evidence inside the durable CAS transaction. A later blocked review overrides an earlier pass, unfinished direct child tasks block acceptance, and failed/missing reviews remain unaccepted.
+
+When fewer than two workers complete, Swarm does not let the sole survivor review itself; the result remains unaccepted and the tool reports that independent review was unavailable. These source-level safeguards are implemented, but they must not be described as fully qualified until the focused swarm tests and typecheck run successfully in CI and real provider execution validates the stored transcript shape.
 
 ## Installation and legacy compatibility
 
