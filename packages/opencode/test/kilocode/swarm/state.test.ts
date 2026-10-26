@@ -743,7 +743,7 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_independent_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-                yield* seedHostCommandEvents(db, {
+        yield* seedHostCommandEvents(db, {
           sessionId: "ses_independent_reviewer",
           command: "bun test test/kilocode/swarm/state.test.ts",
         })
@@ -1033,8 +1033,9 @@ describe("swarm state (M2)", () => {
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_direct_review"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         const events = yield* EventV2.Service
-        // A caller can technically publish a passing event, but the state gate must
-        // reject it because no host-observed execution evidence was attached.
+        // A caller can forge structurally valid evidence and a passing review event.
+        // The state gate must reject it because there is no matching persisted shell
+        // call/success in the claimed reviewer session.
         yield* events.publish(SwarmTaskReviewPassed, {
           taskId: taskId as any,
           swarmId,
@@ -1043,7 +1044,11 @@ describe("swarm state (M2)", () => {
           reviewerAgent: "reviewer",
           verdict: "pass",
           summary: "Claimed to have reviewed the task.",
-          evidenceJson: JSON.stringify([{ id: "e1", kind: "command", reference: "bun test", detail: "Claimed success.", result: "pass", exitCode: 0 }]),
+          evidenceJson: JSON.stringify([{
+            id: "e1", kind: "command", reference: "bun test test/kilocode/swarm/state.test.ts",
+            detail: "Claimed success.", result: "pass", exitCode: 0,
+          }]),
+          executionEvidenceJson: JSON.stringify([verifiedCommand("bun test test/kilocode/swarm/state.test.ts", "ses_direct_review")]),
           checksJson: JSON.stringify([{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }]),
           blockingFindingsJson: "[]",
           uncertaintiesJson: "[]",
@@ -1082,7 +1087,7 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-                yield* seedHostCommandEvents(db, {
+        yield* seedHostCommandEvents(db, {
           sessionId: "ses_latest_reviewer",
           command: "bun test test/kilocode/swarm/state.test.ts",
         })
