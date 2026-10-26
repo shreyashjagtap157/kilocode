@@ -63,10 +63,32 @@ export namespace SwarmVerification {
     if (report.uncertainties.length) result.push("review contains unresolved uncertainties")
     const evidence = new Map(report.evidence.map((item) => [item.id, item]))
     if (evidence.size !== report.evidence.length) result.push("duplicate evidence id")
+    for (const item of report.evidence) {
+      if (!item.id.trim()) result.push("evidence id is empty")
+      if (!item.reference.trim()) result.push(`evidence ${item.id} has no reference`)
+      if (!item.detail.trim()) result.push(`evidence ${item.id} has no details`)
+    }
+    const referencedEvidence = new Set<string>()
     for (const check of report.checks) {
+      if (!check.criterion.trim()) result.push("acceptance criterion is empty")
       if (check.verdict !== "pass") result.push(`criterion did not pass: ${check.criterion}`)
       if (!check.evidenceIds.length) result.push(`criterion has no evidence: ${check.criterion}`)
-      for (const id of check.evidenceIds) if (!evidence.has(id)) result.push(`missing evidence: ${id}`)
+      let hasPassingEvidence = false
+      for (const id of check.evidenceIds) {
+        const item = evidence.get(id)
+        if (!item) {
+          result.push(`missing evidence: ${id}`)
+          continue
+        }
+        referencedEvidence.add(id)
+        if (item.result === "pass") hasPassingEvidence = true
+      }
+      if (check.verdict === "pass" && check.evidenceIds.length > 0 && !hasPassingEvidence) {
+        result.push(`criterion has no passing linked evidence: ${check.criterion}`)
+      }
+    }
+    for (const item of report.evidence) {
+      if (item.id.trim() && !referencedEvidence.has(item.id)) result.push(`evidence is not linked to an acceptance criterion: ${item.id}`)
     }
     const passingExecution = report.evidence.some((item) =>
       (item.kind === "test" || item.kind === "command") && item.result === "pass" && item.exitCode === 0 && item.reference.trim() && item.detail.trim())
