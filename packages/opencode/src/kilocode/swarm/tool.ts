@@ -43,12 +43,6 @@ function parseReview(text: string) {
  * Passing command evidence must come from a completed Kilo shell ToolPart,
  * not from the review model's JSON. Only recognizable validation commands count.
  */
-function isValidationCommand(command: string) {
-  const runner = /(?:^|[;&|]\s*)(?:bun|npm|pnpm|yarn|cargo|go|pytest|python3?|uv|ruff|eslint|tsc|deno|gradle|mvn|dotnet|make|biome|prettier|git|pwsh|powershell|cmd|invoke-pester)\b/i
-  const validation = /\b(?:test|tests|typecheck|type-check|lint|clippy|verify|validate|build|format|fmt|check|compile|pytest|unittest|tsc|eslint|ruff)\b/i
-  return runner.test(command) && validation.test(command)
-}
-
 function verifiedExecutions(
   messages: MessageV2.WithParts[],
   reviewerSessionId: string,
@@ -67,7 +61,7 @@ function verifiedExecutions(
       if (part.type !== "tool" || part.tool !== "bash" || part.state.status !== "completed") continue
       const command = part.state.input.command
       const exitCode = part.state.metadata.exit
-      if (typeof command !== "string" || !isValidationCommand(command)) continue
+      if (typeof command !== "string" || !SwarmVerification.isValidationCommand(command)) continue
       if (typeof exitCode !== "number" || !Number.isInteger(exitCode)) continue
       executions.push({
         command,
