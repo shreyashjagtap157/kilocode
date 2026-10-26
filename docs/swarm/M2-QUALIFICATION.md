@@ -21,6 +21,8 @@ The M3 boundary now consists of:
 
 The worker/session binding is persisted in `kilo_swarm_worker_binding` and has a unique session index. The migration is registered as `202610260001_swarm_worker_binding`.
 
+Nested swarm workers are linked through `kilo_swarm_task.parent_id` to the currently executing parent task, resolved only from a session whose binding, task fence, active claim, and active capacity reservation all match. Root sessions create parentless tasks. Reviewer tasks are deliberately created as root audit tasks; their review events qualify the worker they reviewed, so a reviewer does not accidentally become an unfinished deliverable that blocks the parent. The task-created event decoder remains permissive for historical M3 rows that used a session ID in `parent_id`, while new task creation writes only task IDs or `null`.
+
 ## Important execution semantics
 
 A lease is an ownership generation, not a physical kill switch. Expiration or cancellation cannot retroactively prove that an already-running provider request stopped. Instead:
