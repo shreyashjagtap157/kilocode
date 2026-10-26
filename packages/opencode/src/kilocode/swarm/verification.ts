@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect"
+import { createHash } from "node:crypto"
 import { sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -130,6 +131,18 @@ export namespace SwarmVerification {
    * SessionEvent.Tool transcript. A model-authored JSON field is not proof that
    * a shell command actually ran.
    */
+  const isValidationCommand = (command: string) => {
+    const runner = /(?:^|[;&|]\\s*)(?:bun|npm|pnpm|yarn|cargo|go|pytest|python3?|uv|ruff|eslint|tsc|deno|gradle|mvn|dotnet|make|biome|prettier|git|pwsh|powershell|cmd|invoke-pester)\\b/i
+    const validation = /\\b(?:test|tests|typecheck|type-check|lint|clippy|verify|validate|build|format|fmt|check|compile|pytest|unittest|tsc|eslint|ruff)\\b/i
+    return runner.test(command) && validation.test(command)
+  }
+
+  /**
+   * Validate reviewer evidence against completed, persisted SessionV1 tool parts.
+   * Tool parts are the authoritative source for command arguments, exit status and
+   * captured output. Provider tool events alone do not guarantee that the local
+   * Kilo tool actually executed.
+   */
   export const hostExecutionProblems = (
     db: Database.Interface["db"],
     input: { executionEvidenceJson: unknown; reviewerSessionId: string },
@@ -147,14 +160,11 @@ export namespace SwarmVerification {
       if (executions.length === 0) return ["review contains no host-recorded validation execution"]
 
       const rows = yield* db
-        .all<{ type: string; data: Record<string, unknown> | string }>(sql`
-          SELECT type, data FROM event
-          WHERE aggregate_id = ${input.reviewerSessionId}
-            AND (
-              type LIKE 'session.next.tool.called%'
-              OR type LIKE 'session.next.tool.success%'
-              OR type LIKE 'session.next.tool.failed%'
-            )
+        .all<{ id: string; message_id: string; data: Record<string, unknown> | string }>(sql`
+          SELECT id, message_id, data FROM part
+          WHERE session_id = ${input.reviewerSessionId}
+            AND json_extract(data, '$.type') = 'tool'
+            AND json_extract(data, '$.tool') = 'bash'
         `)
         .pipe(Effect.orDie)
 
@@ -168,40 +178,43 @@ export namespace SwarmVerification {
           return undefined
         }
       }
-      const calls = rows
-        .filter((row) => row.type.startsWith("session.next.tool.called"))
-        .map((row) => ({ type: row.type, data: record(row.data) }))
-      const successes = rows
-        .filter((row) => row.type.startsWith("session.next.tool.success"))
-        .map((row) => ({ type: row.type, data: record(row.data) }))
-      const failures = rows
-        .filter((row) => row.type.startsWith("session.next.tool.failed"))
-        .map((row) => ({ type: row.type, data: record(row.data) }))
+
       const problems: string[] = []
       for (const execution of executions) {
-        if (execution.sourceSessionId !== input.reviewerSessionId) {
-          problems.push(`execution ${execution.callId} belongs to another session`)
+        if (
+          execution.sourceSessionId !== input.reviewerSessionId ||
+          !execution.messageId.trim() ||
+          !execution.partId.trim() ||
+          !execution.callId.trim() ||
+          !/^[0-9a-f]{64}$/.test(execution.outputSha256) ||
+          !isValidationCommand(execution.command)
+        ) {
+          problems.push(`execution ${execution.callId} has malformed provenance or is not a validation command`)
           continue
         }
-        const call = calls.find(({ data }) => {
-          if (!data || data.callID !== execution.callId || data.assistantMessageID !== execution.messageId || data.tool !== "bash") return false
-          const args = record(data.input)
-          return typeof args?.command === "string" && normalizeCommand(args.command) === normalizeCommand(execution.command)
-        })
-        if (!call) {
-          problems.push(`execution ${execution.callId} has no matching persisted shell-tool call`)
-          continue
-        }
-        const failed = failures.some(({ data }) =>
-          data?.callID === execution.callId && data.assistantMessageID === execution.messageId,
-        )
-        const success = successes.some(({ data }) =>
-          data?.callID === execution.callId &&
-          data.assistantMessageID === execution.messageId &&
-          record(data.structured)?.exit === 0,
-        )
-        if (!success || failed || execution.exitCode !== 0) {
-          problems.push(`execution ${execution.callId} has no persisted successful tool result with exit code 0`)
+
+        const partRow = rows.find((row) => row.id === execution.partId && row.message_id === execution.messageId)
+        const part = partRow ? record(partRow.data) : undefined
+        const state = part ? record(part.state) : undefined
+        const args = state ? record(state.input) : undefined
+        const metadata = state ? record(state.metadata) : undefined
+        const output = state?.output
+        const matched =
+          part?.type === "tool" &&
+          part.tool === "bash" &&
+          part.callID === execution.callId &&
+          state?.status === "completed" &&
+          state.time !== undefined &&
+          args?.command === execution.command &&
+          normalizeCommand(String(args.command)) === normalizeCommand(execution.command) &&
+          typeof metadata?.exit === "number" &&
+          metadata.exit === 0 &&
+          execution.exitCode === 0 &&
+          typeof output === "string" &&
+          createHash("sha256").update(output).digest("hex") === execution.outputSha256
+
+        if (!matched) {
+          problems.push(`execution ${execution.callId} has no matching persisted completed shell part with exit 0 and the same output hash`)
         }
       }
       return [...new Set(problems)]
