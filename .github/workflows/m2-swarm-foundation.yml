@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - '.kilocodemodes'
       - 'packages/core/schema.json'
       - 'packages/core/src/database/**'
       - 'packages/core/src/kilocode/swarm/**'
@@ -11,12 +12,14 @@ on:
       - 'packages/core/test/event.test.ts'
       - 'packages/opencode/src/kilocode/swarm/**'
       - 'packages/opencode/src/kilocode/tool/registry.ts'
+      - 'packages/opencode/src/kilocode/modes-migrator.ts'
       - 'packages/opencode/test/kilocode/swarm/**'
       - 'packages/opencode/test/kilocode/fixture/swarm-admission-worker.ts'
       - '.github/workflows/m2-swarm-foundation.yml'
   push:
     branches: [main]
     paths:
+      - '.kilocodemodes'
       - 'packages/core/schema.json'
       - 'packages/core/src/database/**'
       - 'packages/core/src/kilocode/swarm/**'
@@ -24,6 +27,7 @@ on:
       - 'packages/core/test/event.test.ts'
       - 'packages/opencode/src/kilocode/swarm/**'
       - 'packages/opencode/src/kilocode/tool/registry.ts'
+      - 'packages/opencode/src/kilocode/modes-migrator.ts'
       - 'packages/opencode/test/kilocode/swarm/**'
       - 'packages/opencode/test/kilocode/fixture/swarm-admission-worker.ts'
       - '.github/workflows/m2-swarm-foundation.yml'
@@ -58,7 +62,7 @@ jobs:
         working-directory: packages/core
         run: bun test test/event.test.ts test/database-migration.test.ts --timeout 60000
 
-      - name: Test swarm state, claims, reservations, recovery, and process races
+      - name: Test swarm state, claims, reservations, recovery, process races, and execution mode installation
         working-directory: packages/opencode
         run: bun test test/kilocode/swarm --timeout 60000
         env:
