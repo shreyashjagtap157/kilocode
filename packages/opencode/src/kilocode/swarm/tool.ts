@@ -63,8 +63,10 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const batch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: planned, concurrency: args.maxWorkers ?? args.workers.length })
       const reports = yield* Effect.forEach(batch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
       const entries = batch.completed.map((entry, reportIndex) => ({ index: entry.index, role: args.workers[entry.index]?.role ?? entry.result.agent, taskId: entry.result.taskId, sessionId: entry.result.sessionId, durationMs: entry.result.durationMs, finding: finding(reports[reportIndex] ?? []) }))
-      const reviewerPlans = entries.map((entry, reviewIndex) => {
-        const reviewerIndex = (reviewIndex + 1) % entries.length
+      // If fewer than two workers finish, no independent peer exists. Leave every
+      // output unaccepted instead of allowing the sole survivor to review itself.
+      const reviewerPlans = entries.length < 2 ? [] : entries.map((entry, reviewIndex) => {
+        const reviewerIndex = entries[(reviewIndex + 1) % entries.length].index
         return {
           swarmId, parentSessionId: parent.id, description: `Peer reviewer for ${entry.role}`,
           prompt: [`You are the independent peer reviewer for worker ${entry.role}.`, `Swarm objective: ${args.objective}`, `Worker task: ${args.workers[entry.index]?.prompt ?? "unknown"}`, "", "WORKER FINDING TO VERIFY:", entry.finding, "", "REVIEW RULES:", "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.", "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.", "Run an appropriate test or validation command yourself when possible. A PASS requires at least one passing test/command with exitCode 0 and evidence linked to every passed criterion.", "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}", `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`].join("\n"),
@@ -74,7 +76,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const reviewBatch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: reviewerPlans, concurrency: Math.min(args.workers.length, args.maxWorkers ?? args.workers.length) })
       const reviewMessages = yield* Effect.forEach(reviewBatch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
       const reviews = yield* Effect.forEach(reviewBatch.completed, (reviewEntry) => Effect.gen(function* () {
-        // completed[] is compacted when a reviewer fails; use the original plan
+        // completed[] is compacted when a reviewer fails; use the original reviewer-plan
         // index, not the compacted array position, to preserve target identity.
         const target = entries[reviewEntry.index]
         if (!target) return yield* Effect.fail(new Error(`review result has no target for plan index ${reviewEntry.index}`))
