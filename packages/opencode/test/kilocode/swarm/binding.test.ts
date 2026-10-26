@@ -54,16 +54,17 @@ describe("swarm worker binding", () => {
           actor: "act_race",
           corrId: "cor_race" as any,
         })
-        const [left, right] = yield* Effect.all(
+        const outcomes = yield* Effect.all(
           [
-            SwarmWorker.bindSession({ taskId, sessionId: "ses_binding_left", leaseId: admission.leaseId, fence: admission.fence }),
-            SwarmWorker.bindSession({ taskId, sessionId: "ses_binding_right", leaseId: admission.leaseId, fence: admission.fence }),
+            Effect.either(SwarmWorker.bindSession({ taskId, sessionId: "ses_binding_left", leaseId: admission.leaseId, fence: admission.fence })),
+            Effect.either(SwarmWorker.bindSession({ taskId, sessionId: "ses_binding_right", leaseId: admission.leaseId, fence: admission.fence })),
           ],
           { concurrency: 2, discard: false },
-        ).pipe(Effect.map((results) => results.map((result) => ({ _tag: "Right" as const, result }))))
-          .pipe(Effect.catchAll(() => Effect.succeed([] as Array<{ _tag: "Right"; result: unknown }>)))
-        void left
-        void right
+        )
+        const successful = outcomes.filter((outcome) => outcome._tag === "Right")
+        const failed = outcomes.filter((outcome) => outcome._tag === "Left")
+        expect(successful).toHaveLength(1)
+        expect(failed).toHaveLength(1)
         const binding = yield* SwarmWorker.getBinding(taskId)
         expect(["ses_binding_left", "ses_binding_right"]).toContain(binding?.session_id)
         expect(binding?.lease_id).toBe(admission.leaseId)
