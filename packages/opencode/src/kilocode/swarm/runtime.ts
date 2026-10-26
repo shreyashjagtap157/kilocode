@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID, MessageID } from "@/session/schema"
+import { SessionDrain } from "@/kilocode/session/drain"
 import type { Agent } from "@/agent/agent"
 import type { Config } from "@/config/config"
 import { SwarmDispatcher } from "./dispatcher"
@@ -53,6 +54,7 @@ export namespace SwarmRuntime {
   export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
+    const drain = yield* SessionDrain.Service
     const parent = yield* sessions.get(input.parentSessionId)
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
@@ -65,20 +67,26 @@ export namespace SwarmRuntime {
         model: input.subagent.model ? { id: input.subagent.model.modelID, providerID: input.subagent.model.providerID, variant: input.subagent.variant } : undefined,
         permission: plan.permission,
       })
+      yield* drain.link(child.id, parent.id)
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
       const model = child.model ?? parent.model
       if (!model) return yield* Effect.fail(new InvalidInput({ message: `no model available for worker ${child.id}` }))
-      const prepare = prompt.prompt({
-        messageID: MessageID.ascending(),
-        sessionID: child.id,
-        model: { modelID: model.id, providerID: model.providerID },
-        variant: model.variant,
-        agent: plan.agent,
-        tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) },
-        parts: [{ type: "text", text: input.prompt }],
+      const work = Effect.gen(function* () {
+        yield* prompt.prompt({
+          messageID: MessageID.ascending(),
+          sessionID: child.id,
+          model: { modelID: model.id, providerID: model.providerID },
+          variant: model.variant,
+          agent: plan.agent,
+          tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) },
+          parts: [{ type: "text", text: input.prompt }],
+        })
+        // SessionPrompt.prompt queues the child turn; SessionDrain.wait is the
+        // authoritative signal that the actual provider/tool execution is done.
+        yield* drain.wait(child.id)
       }).pipe(Effect.asVoid)
-      yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, prepare })
+      yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, work })
       return { taskId, sessionId: child.id, agent: plan.agent }
     })
 
