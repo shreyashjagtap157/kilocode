@@ -30,9 +30,9 @@ const verifiedCommand = (
   command,
   exitCode,
   sourceSessionId,
-  messageId: "msg_test",
-  partId: "part_test",
-  callId: "call_test",
+  messageId: "msg_" + sourceSessionId,
+  partId: "prt_" + sourceSessionId,
+  callId: "call_" + sourceSessionId,
   outputSha256: createHash("sha256").update(output).digest("hex"),
 })
 
@@ -40,9 +40,9 @@ const seedHostCommandPart = (
   db: Database.Interface["db"],
   input: { sessionId: string; command: string; exitCode?: number; output?: string },
 ) => Effect.gen(function* () {
-  const messageId = "msg_test"
-  const partId = "part_test"
-  const callId = "call_test"
+  const messageId = "msg_" + input.sessionId
+  const partId = "prt_" + input.sessionId
+  const callId = "call_" + input.sessionId
   const now = Date.now()
   // PartTable.message_id has a real foreign key. Seed the minimal parent chain
   // so these tests exercise canonical persisted tool parts rather than bypassing
