@@ -1,4 +1,5 @@
 import { Cause, Effect, Schema } from "effect"
+import { createHash } from "node:crypto"
 import * as Tool from "@/tool/tool"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -37,6 +38,51 @@ function parseReview(text: string) {
   }
 }
 
+
+/**
+ * Passing command evidence must come from a completed Kilo shell ToolPart,
+ * not from the review model's JSON. Only recognizable validation commands count.
+ */
+function isValidationCommand(command: string) {
+  const runner = /^\s*(?:bun|npm|pnpm|yarn|cargo|go|pytest|python3?|uv|ruff|eslint|tsc|deno|gradle|mvn|dotnet|make|biome|prettier|git)\b/i
+  const validation = /\b(?:test|tests|typecheck|type-check|lint|clippy|verify|validate|build|format|fmt|check|compile|pytest|unittest|tsc|eslint|ruff)\b/i
+  return runner.test(command) && validation.test(command)
+}
+
+function verifiedExecutions(
+  messages: MessageV2.WithParts[],
+  reviewerSessionId: string,
+) {
+  const executions: Array<{
+    command: string
+    exitCode: number
+    sourceSessionId: string
+    messageId: string
+    partId: string
+    callId: string
+    outputSha256: string
+  }> = []
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || part.tool !== "bash" || part.state.status !== "completed") continue
+      const command = part.state.input.command
+      const exitCode = part.state.metadata.exit
+      if (typeof command !== "string" || !isValidationCommand(command)) continue
+      if (typeof exitCode !== "number" || !Number.isInteger(exitCode)) continue
+      executions.push({
+        command,
+        exitCode,
+        sourceSessionId: reviewerSessionId,
+        messageId: message.info.id,
+        partId: part.id,
+        callId: part.callID,
+        outputSha256: createHash("sha256").update(part.state.output).digest("hex"),
+      })
+    }
+  }
+  return executions
+}
+
 export const SwarmTool: Tool.Info<typeof Parameters> = {
   id: "swarm",
   init: () => Effect.succeed({
@@ -69,7 +115,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         const reviewerIndex = entries[(reviewIndex + 1) % entries.length].index
         return {
           swarmId, parentSessionId: parent.id, description: `Peer reviewer for ${entry.role}`,
-          prompt: [`You are the independent peer reviewer for worker ${entry.role}.`, `Swarm objective: ${args.objective}`, `Worker task: ${args.workers[entry.index]?.prompt ?? "unknown"}`, "", "WORKER FINDING TO VERIFY:", entry.finding, "", "REVIEW RULES:", "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.", "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.", "Run an appropriate test or validation command yourself when possible. A PASS requires at least one passing test/command with exitCode 0 and evidence linked to every passed criterion.", "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}", `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`].join("\n"),
+          prompt: [`You are the independent peer reviewer for worker ${entry.role}.`, `Swarm objective: ${args.objective}`, `Worker task: ${args.workers[entry.index]?.prompt ?? "unknown"}`, "", "WORKER FINDING TO VERIFY:", entry.finding, "", "REVIEW RULES:", "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.", "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.", "Run an appropriate test or validation command yourself. A PASS requires a Kilo-recorded successful shell execution with exitCode 0; the evidence.reference must exactly match the command you actually ran. Never invent command results. Link evidence to every passed criterion.", "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}", `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`].join("\n"),
           caller, subagent: resolved[reviewerIndex], actor: ctx.agent, corrId: `${base}_review_${reviewIndex}` as any, readOnly: true,
         }
       })
@@ -81,7 +127,9 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         const target = entries[reviewEntry.index]
         if (!target) return yield* Effect.fail(new Error(`review result has no target for plan index ${reviewEntry.index}`))
         const reportIndex = reviewBatch.completed.findIndex((entry) => entry.index === reviewEntry.index)
-        const report = parseReview(finding(reviewMessages[reportIndex] ?? []))
+        const reviewTranscript = reviewMessages[reportIndex] ?? []
+        const report = parseReview(finding(reviewTranscript))
+        const executedCommands = verifiedExecutions(reviewTranscript, reviewEntry.result.sessionId)
         const recorded = yield* SwarmVerification.recordReview({
           taskId: target.taskId,
           reviewerTaskId: reviewEntry.result.taskId,
@@ -89,6 +137,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           reviewerAgent: reviewEntry.result.agent,
           corrId: `${base}_review_commit_${reviewEntry.index}`,
           report,
+          executedCommands,
         }).pipe(Effect.catchCause((cause) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [Cause.pretty(cause)], evidence: [], checks: [] })))
 
         let acceptanceFailure: string | undefined
