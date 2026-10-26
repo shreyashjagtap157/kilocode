@@ -4,6 +4,7 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import * as MessageV2 from "@/session/message-v2"
+import { BoardStore } from "@/kilocode/board/store"
 import { SwarmRuntime } from "./runtime"
 import { SwarmState } from "./state"
 import { DynamicAgentFactory } from "./factory"
@@ -30,7 +31,7 @@ function errorText(error: unknown) {
 export const SwarmTool: Tool.Info<typeof Parameters> = {
   id: "swarm",
   init: () => Effect.succeed({
-    description: "Run multiple configured Kilo specialist agents concurrently as a durable swarm. Use this for independent research, implementation, verification, or review work that benefits from parallel specialist perspectives; synthesize the returned findings in the parent agent.",
+    description: "Run multiple configured Kilo specialist agents concurrently as a durable team swarm. Workers share Kilo's persistent session board so they can read team context, post findings, ask questions, and coordinate with peers while the parent synthesizes the result.",
     parameters: Parameters,
     execute: (args, ctx) => Effect.gen(function* () {
       if (args.workers.length === 0) return yield* Effect.fail(new Error("swarm requires at least one worker"))
@@ -42,13 +43,37 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       for (const [index, subagent] of resolved.entries()) {
         DynamicAgentFactory.plan({ parentID: parent.id, description: args.workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
       }
-      const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
+
+      // Kilo's shared agent board is enabled by default and follows the parent
+      // session's ancestry. Initialize it before creating workers so every child
+      // session sees the same objective and can communicate with its peers.
+      yield* BoardStore.scope(parent.id as SessionID)
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
+      yield* BoardStore.post({
+        sessionID: parent.id as SessionID,
+        messageID: `${base}_objective`,
+        callID: base,
+        to: "ALL",
+        type: "INFO",
+        body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post useful discoveries, blockers, questions, and verified findings for peers; avoid duplicating work already reported by another worker.`,
+      })
+
+      const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
       const planned = args.workers.map((worker, index) => ({
         swarmId,
         parentSessionId: parent.id,
         description: worker.role,
-        prompt: `Shared objective: ${args.objective}\n\nRole: ${worker.role}\n\nTask: ${worker.prompt}`,
+        prompt: [
+          `Shared objective: ${args.objective}`,
+          `Role: ${worker.role}`,
+          `Task: ${worker.prompt}`,
+          "",
+          "TEAM COORDINATION PROTOCOL:",
+          "You are a member of a persistent Kilo agent team. Before doing substantive work, inspect the shared agent board for the objective and peer progress when the board tools are available.",
+          "During work, post concise discoveries, blockers, questions, and verified findings to the shared board so other workers can build on them. Do not merely wait for the parent; communicate useful intermediate results to teammates.",
+          "If another worker has already solved part of your task, build on its finding instead of duplicating the same investigation. If you disagree, post the evidence and explain the contradiction.",
+          "Before finishing, post your most important verified finding and any remaining uncertainty to the shared board. Your final response should still contain your complete role-specific result for the parent.",
+        ].join("\n"),
         caller,
         subagent: resolved[index],
         actor: ctx.agent,
@@ -64,15 +89,21 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         finding: finding(reports[reportIndex] ?? []),
       }))
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
+      const board = yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 50 })
+      const communications = board.messages
+        .filter((message) => message.from !== "main")
+        .map((message) => ({ from: message.fromLabel ?? message.from, to: message.toLabel ?? message.to, type: message.type, body: message.body, id: message.id }))
       return {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers`,
         output: [
           `Swarm objective: ${args.objective}`,
           `Workers completed: ${entries.length}/${args.workers.length}`,
+          `Team communications: ${communications.length}`,
           ...entries.flatMap((entry, index) => [`\n## ${index + 1}. ${entry.role}`, entry.finding, `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`]),
+          ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, workers: entries, failures },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, workers: entries, failures, communications },
       }
     }),
   }),
