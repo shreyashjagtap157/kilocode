@@ -65,7 +65,7 @@ export namespace SwarmVerification {
     }
   }
 
-  const normalizeCommand = (command: string) => command.trim().replace(/\\s+/g, " ")
+  const normalizeCommand = (command: string) => command.trim().replace(/\s+/g, " ")
 
   const problems = (report: ReviewReport, malformed: boolean, executions: readonly VerifiedExecution[], reviewerSessionId: string) => {
     const result: string[] = []
@@ -130,11 +130,73 @@ export namespace SwarmVerification {
    * SessionEvent.Tool transcript. A model-authored JSON field is not proof that
    * a shell command actually ran.
    */
-  const isValidationCommand = (command: string) => {
-    const runner = /(?:^|[;&|]\s*)(?:bun|npm|pnpm|yarn|cargo|go|pytest|python3?|uv|ruff|eslint|tsc|deno|gradle|mvn|dotnet|make|biome|prettier|git|pwsh|powershell|cmd|invoke-pester)\b/i
-    const validation = /\b(?:test|tests|typecheck|type-check|lint|clippy|verify|validate|build|format|fmt|check|compile|pytest|unittest|tsc|eslint|ruff)\b/i
-    return runner.test(command) && validation.test(command)
+  function shellSegments(command: string) {
+    const segments: string[] = []
+    let current = ""
+    let quote: "'" | '"' | "\`" | undefined
+    let escaped = false
+    for (let i = 0; i < command.length; i++) {
+      const char = command[i]!
+      if (escaped) {
+        current += char
+        escaped = false
+        continue
+      }
+      if (char === "\\" && quote !== "'") {
+        current += char
+        escaped = true
+        continue
+      }
+      if (quote) {
+        current += char
+        if (char === quote) quote = undefined
+        continue
+      }
+      if (char === "'" || char === '"' || char === "\`") {
+        quote = char
+        current += char
+        continue
+      }
+      if (char === ";" || char === "\n" || char === "|") {
+        if (current.trim()) segments.push(current.trim())
+        current = ""
+        if (char === "|" && command[i + 1] === "|") i++
+        continue
+      }
+      if (char === "&" && command[i + 1] === "&") {
+        if (current.trim()) segments.push(current.trim())
+        current = ""
+        i++
+        continue
+      }
+      current += char
+    }
+    if (current.trim()) segments.push(current.trim())
+    return segments
   }
+
+  const validationCommand = [
+    /^bun\s+(?:(?:run|x)\s+)?(?:test(?::[\w-]+)?|typecheck|lint|check|build|format|fmt|clippy|tsc|eslint|prettier)\b/i,
+    /^(?:npm|pnpm|yarn)(?:\s+--filter\s+\S+)?\s+(?:run\s+)?(?:test(?::[\w-]+)?|typecheck|lint|check|build|format)\b/i,
+    /^cargo\s+(?:test|check|clippy|build|fmt\s+--check)\b/i,
+    /^go\s+(?:test|vet|build)\b/i,
+    /^(?:pytest|ruff|eslint|tsc)\b/i,
+    /^python3?\s+-m\s+(?:pytest|unittest)\b/i,
+    /^deno\s+(?:test|check|lint)\b/i,
+    /^(?:gradle|mvn|dotnet)\s+(?:test|check|verify|build)\b/i,
+    /^(?:\.\/gradlew|gradlew|mvnw)\s+(?:test|check|verify|build)\b/i,
+    /^make\s+(?:test|check|verify|build|lint)\b/i,
+    /^biome\s+(?:check|lint)\b/i,
+    /^prettier\s+--check\b/i,
+    /^npx\s+(?:vitest|jest|playwright|tsc|eslint|prettier)\b/i,
+  ] as const
+
+  /** Match known validation invocations, not arbitrary shell text mentioning "test". */
+  export const isValidationCommand = (command: string) =>
+    shellSegments(command).some((segment) => {
+      const trimmed = segment.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+/i, "")
+      return validationCommand.some((pattern) => pattern.test(trimmed))
+    })
 
   /**
    * Validate reviewer evidence against completed, persisted SessionV1 tool parts.
