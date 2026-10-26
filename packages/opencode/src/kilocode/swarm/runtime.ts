@@ -62,7 +62,7 @@ export namespace SwarmRuntime {
         parentID: parent.id,
         title: plan.title,
         agent: plan.agent,
-        model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID, variant: resolved.variant },
+        model: { id: resolved.model.modelID, providerID: resolved.model.providerID, variant: resolved.variant },
         permission: plan.permission,
       })
       yield* drain.link(child.id, parent.id)
