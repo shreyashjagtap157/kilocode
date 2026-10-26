@@ -31,6 +31,16 @@ A lease is an ownership generation, not a physical kill switch. Expiration or ca
 - recovery marks the binding expired when that generation is no longer active;
 - stale workers therefore cannot commit newer-generation swarm state.
 
+## Independent peer-review and evidence-backed acceptance
+
+The user-facing swarm tool now runs a distinct reviewer wave after the worker wave. Reviewers use separate durable tasks/sessions, are denied edit permission, and cannot delegate additional tasks. The shared team board remains the communication surface for worker progress, blockers, findings, and handoffs; board messages are advisory and never grant lifecycle authority.
+
+A passing review must contain structured acceptance criteria, evidence references linked to each passing criterion, no blocking findings or unresolved uncertainties, and a successful validation command. A model-authored claim that a command passed is insufficient on its own. Execution evidence carries the reviewer session/message/part/call identity, the actual command, exit code, and SHA-256 output digest. At qualification time, Kilo checks that this proof matches the persisted completed shell-tool part in the bound reviewer session.
+
+\`SwarmState.transition(... to: "accepted")\` enforces the gate both before the transition and again inside EventV2's CAS transaction. It reads the latest review outcome (a later blocked review overrides an earlier pass), validates the reviewer task and current session binding, revalidates the structured evidence, matches the host-recorded tool part and output hash, and refuses acceptance while any direct child task remains outside \`accepted\`/\`integrated\`. Reviewer failures, missing reviewers, invalid proof, stale bindings, and failed acceptance transitions remain visible as unaccepted results rather than being silently reported as successful.
+
+Regression coverage has been added for missing reviews, invalid evidence, a directly published forged pass, reviewer/session mismatch, state changes in commit hooks, a later blocked review overriding a pass, failed commands, output-hash mismatch, and unfinished child tasks. These test cases must still run successfully in CI before this gate is considered qualified. A committed test is not itself a passing test result.
+
 ## Remaining qualification gates
 
 M3 is **not qualified** until all of the following are proven by tests/CI:
