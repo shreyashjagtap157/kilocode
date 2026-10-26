@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Schema } from "effect"
 import * as Tool from "@/tool/tool"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -64,7 +64,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const reports = yield* Effect.forEach(batch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
       const entries = batch.completed.map((entry, reportIndex) => ({ index: entry.index, role: args.workers[entry.index]?.role ?? entry.result.agent, taskId: entry.result.taskId, sessionId: entry.result.sessionId, durationMs: entry.result.durationMs, finding: finding(reports[reportIndex] ?? []) }))
       const reviewerPlans = entries.map((entry, reviewIndex) => {
-        const reviewerIndex = (entry.index + 1) % entries.length
+        const reviewerIndex = (reviewIndex + 1) % entries.length
         return {
           swarmId, parentSessionId: parent.id, description: `Peer reviewer for ${entry.role}`,
           prompt: [`You are the independent peer reviewer for worker ${entry.role}.`, `Swarm objective: ${args.objective}`, `Worker task: ${args.workers[entry.index]?.prompt ?? "unknown"}`, "", "WORKER FINDING TO VERIFY:", entry.finding, "", "REVIEW RULES:", "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.", "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.", "Run an appropriate test or validation command yourself when possible. A PASS requires at least one passing test/command with exitCode 0 and evidence linked to every passed criterion.", "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}", `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`].join("\n"),
@@ -73,29 +73,66 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       })
       const reviewBatch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: reviewerPlans, concurrency: Math.min(args.workers.length, args.maxWorkers ?? args.workers.length) })
       const reviewMessages = yield* Effect.forEach(reviewBatch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
-      const reviews = yield* Effect.forEach(reviewBatch.completed, (reviewEntry, index) => Effect.gen(function* () {
-        const target = entries[index]
-        const report = parseReview(finding(reviewMessages[index] ?? []))
-        const recorded = yield* SwarmVerification.recordReview({ taskId: target.taskId, reviewerTaskId: reviewEntry.result.taskId, reviewerSessionId: reviewEntry.result.sessionId, reviewerAgent: reviewEntry.result.agent, corrId: `${base}_review_commit_${index}`, report }).pipe(Effect.catchAll((error) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [errorText(error)], evidence: [], checks: [] })))
+      const reviews = yield* Effect.forEach(reviewBatch.completed, (reviewEntry) => Effect.gen(function* () {
+        // completed[] is compacted when a reviewer fails; use the original plan
+        // index, not the compacted array position, to preserve target identity.
+        const target = entries[reviewEntry.index]
+        if (!target) return yield* Effect.fail(new Error(`review result has no target for plan index ${reviewEntry.index}`))
+        const reportIndex = reviewBatch.completed.findIndex((entry) => entry.index === reviewEntry.index)
+        const report = parseReview(finding(reviewMessages[reportIndex] ?? []))
+        const recorded = yield* SwarmVerification.recordReview({
+          taskId: target.taskId,
+          reviewerTaskId: reviewEntry.result.taskId,
+          reviewerSessionId: reviewEntry.result.sessionId,
+          reviewerAgent: reviewEntry.result.agent,
+          corrId: `${base}_review_commit_${reviewEntry.index}`,
+          report,
+        }).pipe(Effect.catchAll((error) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [errorText(error)], evidence: [], checks: [] })))
+
+        let acceptanceFailure: string | undefined
         if (recorded.accepted) {
           const task = yield* SwarmState.getTask(target.taskId)
-          yield* SwarmState.transition({ taskId: target.taskId, to: "accepted", expectedVersion: task.version, actor: ctx.agent, corrId: `${base}_accept_${index}` }).pipe(Effect.catchAll(() => Effect.void))
+          const outcome = yield* Effect.exit(SwarmState.transition({
+            taskId: target.taskId,
+            to: "accepted",
+            expectedVersion: task.version,
+            actor: ctx.agent,
+            corrId: `${base}_accept_${reviewEntry.index}`,
+          }))
+          if (outcome._tag === "Failure") {
+            acceptanceFailure = Cause.pretty(outcome.cause)
+          } else {
+            const committed = yield* SwarmState.getTask(target.taskId)
+            if (committed.state !== "accepted") acceptanceFailure = `acceptance transition returned but task state is ${committed.state}`
+          }
         }
-        return { workerTaskId: target.taskId, reviewerTaskId: reviewEntry.result.taskId, ...recorded }
+        return {
+          workerTaskId: target.taskId,
+          reviewerTaskId: reviewEntry.result.taskId,
+          ...recorded,
+          accepted: recorded.accepted && !acceptanceFailure,
+          blockingFindings: [...recorded.blockingFindings, ...(acceptanceFailure ? [acceptanceFailure] : [])],
+        }
       }), { concurrency: "unbounded" })
       const board = yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 100 })
       const communications = board.messages.filter((message) => message.from !== "main").map((message) => ({ from: message.fromLabel ?? message.from, to: message.toLabel ?? message.to, type: message.type, body: message.body, id: message.id }))
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
+      const reviewerFailures = reviewBatch.failed.map((entry) => ({
+        role: entries[entry.index]?.role ?? "reviewer",
+        targetRole: entries[entry.index]?.role ?? "unknown worker",
+        error: errorText(entry.error),
+      }))
       const accepted = reviews.filter((review) => review.accepted).length
       return {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
-          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
+          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
           ...entries.flatMap((entry, index) => { const review = reviews.find((item) => item.workerTaskId === entry.taskId); return [`\n## ${index + 1}. ${entry.role}`, entry.finding, `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`, ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.join("; ")}`] : []), `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`] }),
           ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
+          ...reviewerFailures.flatMap((entry) => [`\n## REVIEW FAILED: ${entry.role} (target: ${entry.targetRole})`, entry.error]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, independentlyVerifiedCount: accepted, workers: entries, reviews, failures, communications },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, independentlyVerifiedCount: accepted, workers: entries, reviews, failures, reviewerFailures, communications },
       }
     }),
   }),
