@@ -853,7 +853,7 @@ describe("swarm state (M2)", () => {
   })
 
 
-  test("review evidence without a passing execution cannot qualify the task", async () => {
+  test("reviewer-asserted command success cannot qualify without host-recorded execution", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
     await use(
@@ -885,9 +885,12 @@ describe("swarm state (M2)", () => {
           executedCommands: [],
           report: {
             verdict: "pass",
-            summary: "The reviewer asserted success without a passing command or test.",
-            checks: [{ criterion: "implementation meets the task", verdict: "pass", evidenceIds: ["e1"] }],
-            evidence: [{ id: "e1", kind: "file", reference: "src/example.ts", detail: "File was inspected.", result: "observed" }],
+            summary: "The reviewer claimed a test passed but no corresponding host tool execution exists.",
+            checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{
+              id: "e1", kind: "command", reference: "bun test test/kilocode/swarm/state.test.ts",
+              detail: "Reviewer-asserted exit code without a recorded invocation.", result: "pass", exitCode: 0,
+            }],
             blockingFindings: [],
             uncertainties: [],
           },
