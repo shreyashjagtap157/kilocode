@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
@@ -187,6 +187,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           corrId: "cor_nested_parent_accept" as any,
         }))
         expect(acceptance._tag).toBe("Failure")
+        if (acceptance._tag === "Failure") expect(Cause.pretty(acceptance.cause)).toContain("child task")
       }),
       (tmp as any).path + "/swarm.db",
     )
