@@ -765,7 +765,7 @@ describe("swarm state (M2)", () => {
         // Simulate a concurrent review invalidation after preflight but inside
         // EventV2's transaction, so the CAS commit-time qualification check must reject.
         yield* events.project(SwarmTaskTransitioned, () =>
-          db.run(sql`DELETE FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'`).pipe(Effect.asVoid, Effect.orDie),
+          db.run(sql`DELETE FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'`).pipe(Effect.asVoid, Effect.orDie),
         )
         const attempt = yield* Effect.exit(SwarmState.transition({
           taskId, to: "accepted", expectedVersion: workerVersion, actor: "act_test", corrId: "cor_acceptance_race" as any,
@@ -775,7 +775,7 @@ describe("swarm state (M2)", () => {
         expect(task.state).toBe("reviewing")
         expect(task.version).toBe(workerVersion)
         const reviewEvent = yield* db.get<{ count: number }>(sql`
-          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'
+          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'
         `)
         expect(reviewEvent?.count).toBe(1)
       }),
@@ -832,7 +832,7 @@ describe("swarm state (M2)", () => {
         const reviewer = yield* SwarmState.getTask(reviewerTaskId)
         expect(reviewer.state).toBe("reviewing")
         const reviewEvent = yield* db.get<{ count: number }>(sql`
-          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'
+          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'
         `)
         expect(reviewEvent?.count).toBe(0)
       }),
