@@ -5,7 +5,7 @@ import path from "node:path"
 import { ModesMigrator } from "@/kilocode/modes-migrator"
 
 describe("Swarm execution mode installation", () => {
-  test("project .kilocodemodes installs Swarm as a primary agent", async () => {
+  test("project .kilocodemodes installs Swarm as a primary team agent", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kilo-swarm-mode-"))
     try {
       const source = await readFile(path.resolve(import.meta.dir, "../../../../.kilocodemodes"), "utf8")
@@ -19,6 +19,8 @@ describe("Swarm execution mode installation", () => {
       expect(swarm.mode).toBe("primary")
       expect(swarm.description).toContain("Durable multi-agent orchestration")
       expect(swarm.prompt).toContain("durable swarm tool")
+      expect(swarm.prompt).toContain("shared agent board")
+      expect(swarm.prompt).toContain("post useful discoveries")
       expect(swarm.permission).toEqual(expect.arrayContaining([
         expect.objectContaining({ permission: "read", action: "allow" }),
         expect.objectContaining({ permission: "edit", action: "allow" }),
