@@ -267,16 +267,18 @@ export namespace SwarmState {
       const reviewerTaskId = data.reviewerTaskId as string
       const reviewerSessionId = data.reviewerSessionId as string
       const reviewer = yield* db
-        .get<{ id: string; swarm_id: string; state: string }>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${reviewerTaskId}`)
+        .get<{ id: string; swarm_id: string; state: string; fence: number }>(sql`SELECT id, swarm_id, state, fence FROM kilo_swarm_task WHERE id = ${reviewerTaskId}`)
         .pipe(Effect.orDie)
       const binding = yield* db
-        .get<{ session_id: string; swarm_id: string }>(sql`SELECT session_id, swarm_id FROM kilo_swarm_worker_binding WHERE task_id = ${reviewerTaskId}`)
+        .get<{ session_id: string; swarm_id: string; fence: number; state: string }>(sql`SELECT session_id, swarm_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${reviewerTaskId}`)
         .pipe(Effect.orDie)
       if (
         !reviewer ||
         reviewer.swarm_id !== swarmId ||
         !["reviewing", "accepted", "integrated"].includes(reviewer.state) ||
         !binding ||
+        binding.state !== "bound" ||
+        binding.fence !== reviewer.fence ||
         binding.swarm_id !== swarmId ||
         binding.session_id !== reviewerSessionId
       ) {
