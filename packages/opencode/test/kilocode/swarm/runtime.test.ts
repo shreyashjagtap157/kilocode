@@ -99,7 +99,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         expect(result.taskId).toMatch(/^tsk_/)
         expect(result.durationMs).toBeGreaterThanOrEqual(0)
         expect(result.agent).toBe("worker")
-        expect(created?.model).toEqual({ modelID: "test-model", providerID: "test-provider", variant: undefined })
+        expect(created?.model).toEqual({ id: "test-model", providerID: "test-provider", variant: undefined })
         const { db } = yield* Database.Service
         const task = yield* db
           .get<{ state: string; parent_id: string | null }>(sql`SELECT state, parent_id FROM kilo_swarm_task WHERE swarm_id = ${swarmId}`)
