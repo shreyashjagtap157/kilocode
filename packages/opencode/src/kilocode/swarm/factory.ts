@@ -13,6 +13,92 @@ import { KiloTask } from "@/kilocode/tool/task"
 import { SessionID } from "@/session/schema"
 
 type Action = Permission.Rule["action"]
+
+const readOnlyShellCommands = [
+  "pwd*",
+  "ls *",
+  "cat *",
+  "head *",
+  "tail *",
+  "rg *",
+  "grep *",
+  "wc *",
+  "file *",
+  "stat *",
+  "git status*",
+  "git diff*",
+  "git log*",
+  "git show*",
+  "git grep*",
+  "git rev-parse*",
+  "git ls-files*",
+  "git ls-tree*",
+  "git cat-file*",
+  "bun test*",
+  "bun run test*",
+  "bun typecheck*",
+  "bun run typecheck*",
+  "bun run lint*",
+  "bun run check*",
+  "npm test*",
+  "npm run test*",
+  "npm run typecheck*",
+  "npm run lint*",
+  "pnpm test*",
+  "pnpm run test*",
+  "pnpm --filter * test*",
+  "pnpm --filter * run test*",
+  "yarn test*",
+  "yarn run test*",
+  "cargo test*",
+  "cargo check*",
+  "cargo clippy*",
+  "cargo fmt --check*",
+  "go test*",
+  "pytest*",
+  "python -m pytest*",
+  "python3 -m pytest*",
+  "tsc*",
+  "eslint*",
+  "deno test*",
+  "deno check*",
+  "gradle test*",
+  "./gradlew test*",
+  "mvn test*",
+  "./mvnw test*",
+  "dotnet test*",
+  "make test*",
+  "make check*",
+  "biome check*",
+  "prettier --check*",
+  "npx vitest*",
+  "npx jest*",
+] as const
+
+const shellOperatorSuffixes = [">", ">>", ";", "|", "&&", "||", "$(", "`"] as const
+
+/**
+ * A reviewer may inspect files and run validation, but must not mutate source via
+ * the shell, edit tools, or recursive task delegation. The explicit command
+ * allowlist is still intersected with the original agent/parent permissions;
+ * this ceiling never grants a capability that the caller did not already have.
+ */
+export const readOnlyPermissions: Permission.Rule[] = [
+  { permission: "edit", pattern: "*", action: "deny" },
+  { permission: "write", pattern: "*", action: "deny" },
+  { permission: "apply_patch", pattern: "*", action: "deny" },
+  { permission: "task", pattern: "*", action: "deny" },
+  { permission: "todowrite", pattern: "*", action: "deny" },
+  { permission: "bash", pattern: "*", action: "deny" },
+  ...readOnlyShellCommands.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })),
+  ...readOnlyShellCommands.flatMap((pattern) =>
+    shellOperatorSuffixes.map((operator) => ({
+      permission: "bash",
+      pattern: `${pattern}${operator}*`,
+      action: "deny" as const,
+    })),
+  ),
+]
 const restrictiveness: Record<Action, number> = { allow: 0, ask: 1, deny: 2 }
 const specificity = (pattern: string) => pattern.replaceAll("*", "").length
 
