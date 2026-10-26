@@ -38,6 +38,8 @@ export namespace SwarmRuntime {
     swarmId: string; parentSessionId: SessionID; description: string; prompt: string; caller: Agent.Info; subagent: Agent.Info; actor: string; corrId: string
     mcp?: ConfigType.Info["mcp"]; depth?: number; maxDepth?: number; leaseMs?: number; renewalIntervalMs?: number; ownerId?: string
     readOnly?: boolean
+    /** undefined inherits the active session task; null deliberately creates a root task (e.g. reviewer work). */
+    parentTaskId?: string | null
   }
   export type PlannedResult = { taskId: string; sessionId: string; agent: string; durationMs: number }
 
@@ -52,7 +54,17 @@ export namespace SwarmRuntime {
     if (!parent.model) return yield* Effect.fail(new InvalidInput({ message: `parent session ${parent.id} has no model` }))
     // Root sessions create root tasks. A currently executing swarm worker creates
     // true child tasks tied to its active fenced task, never to the session ID.
-    const parentTaskId = yield* SwarmWorker.parentTaskForSession(parent.id)
+    // A reviewer task can explicitly be detached from the enclosing worker's
+    // acceptance dependencies: its success is reflected in the durable review event.
+    const parentTaskId = input.parentTaskId === null
+      ? undefined
+      : input.parentTaskId ?? (yield* SwarmWorker.parentTaskForSession(parent.id))
+    if (parentTaskId) {
+      const parentTask = yield* SwarmState.getTask(parentTaskId)
+      if (parentTask.state !== "running" || parentTask.cancel_requested !== 0) {
+        return yield* Effect.fail(new InvalidInput({ message: `parent task ${parentTaskId} is not actively executing` }))
+      }
+    }
     const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
     const executionPlan = input.readOnly
       ? {
