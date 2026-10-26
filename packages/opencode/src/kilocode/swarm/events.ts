@@ -11,7 +11,9 @@ import { SwarmTaskID, TaskState, CorrelationID } from "./schema"
 export const SwarmTaskCreated = EventV2.define({
   type: "swarm.task.created",
   durable: { version: 1, aggregate: "taskId" },
-  schema: { taskId: SwarmTaskID, swarmId: Schema.String, state: TaskState, parentId: Schema.NullOr(SwarmTaskID), corrId: CorrelationID },
+  // Historical M3 events may contain the parent session ID. Keep replay permissive;
+  // new task creation now writes only a task ID or null for this field.
+  schema: { taskId: SwarmTaskID, swarmId: Schema.String, state: TaskState, parentId: Schema.NullOr(Schema.String), corrId: CorrelationID },
 })
 
 export const SwarmTaskTransitioned = EventV2.define({
