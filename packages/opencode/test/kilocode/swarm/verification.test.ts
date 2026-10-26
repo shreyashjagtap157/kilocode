@@ -17,6 +17,7 @@ describe("SwarmVerification command evidence", () => {
       "tsc --noEmit",
       "eslint src",
       "deno test",
+      "Invoke-Pester",
       "CI=1 bun run typecheck",
     ]
     for (const command of valid) {
