@@ -1,8 +1,5 @@
 // Kilo Swarm M3 — orchestration runtime.
-//
-// Swarm owns durable admission/fencing; Kilo owns the actual agent/provider/tool
-// execution. The runtime also provides the high-level planned-worker path so a
-// caller does not have to manufacture a child session manually.
+// Swarm owns durable admission/fencing; Kilo owns the actual agent/provider/tool execution.
 import { Effect, Schema } from "effect"
 import { randomUUID } from "node:crypto"
 import { Session } from "@/session/session"
@@ -16,9 +13,7 @@ import { SwarmWorker } from "./worker"
 import { DynamicAgentFactory } from "./factory"
 
 export namespace SwarmRuntime {
-  export class InvalidInput extends Schema.TaggedErrorClass<InvalidInput>()("SwarmRuntime.InvalidInput", {
-    message: Schema.String,
-  }) {}
+  export class InvalidInput extends Schema.TaggedErrorClass<InvalidInput>()("SwarmRuntime.InvalidInput", { message: Schema.String }) {}
 
   export type Input = {
     taskId: string
@@ -30,27 +25,11 @@ export namespace SwarmRuntime {
     renewalIntervalMs?: number
   }
 
-  /** Resume an already-bound Kilo session under a new durable swarm admission. */
   export const runSession = Effect.fn("SwarmRuntime.runSession")(function* (input: Input) {
     if (!input.taskId.startsWith("tsk_")) return yield* Effect.fail(new InvalidInput({ message: "invalid swarm task id" }))
     if (!input.sessionId) return yield* Effect.fail(new InvalidInput({ message: "sessionId is required" }))
-    const admission = yield* SwarmDispatcher.admit({
-      taskId: input.taskId,
-      ownerId: input.ownerId,
-      leaseMs: input.leaseMs ?? 30_000,
-      actor: input.actor,
-      corrId: input.corrId,
-    })
-    yield* SwarmWorker.resumeSession({
-      taskId: admission.taskId,
-      sessionId: input.sessionId,
-      leaseId: admission.leaseId,
-      fence: admission.fence,
-      actor: input.actor,
-      corrId: input.corrId,
-      leaseMs: input.leaseMs,
-      renewalIntervalMs: input.renewalIntervalMs,
-    })
+    const admission = yield* SwarmDispatcher.admit({ taskId: input.taskId, ownerId: input.ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
+    yield* SwarmWorker.resumeSession({ taskId: admission.taskId, sessionId: input.sessionId, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs })
     return { taskId: admission.taskId, sessionId: input.sessionId }
   })
 
@@ -71,109 +50,52 @@ export namespace SwarmRuntime {
     ownerId?: string
   }
 
-  /**
-   * Create, prompt, and execute a real Kilo child session from the declarative
-   * worker plan. Permission derivation is performed by DynamicAgentFactory;
-   * Session.Service and SessionPrompt.Service remain the authorities for Kilo
-   * session creation and prompt/execution semantics.
-   *
-   * This high-level operation intentionally has no idempotency-key parameter:
-   * there is a crash window between child-session creation and worker binding,
-   * so callers must use the lower-level durable task API when they require
-   * explicit retry/idempotency semantics.
-   */
   export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
     const parent = yield* sessions.get(input.parentSessionId)
-    const plan = DynamicAgentFactory.plan({
-      parentID: parent.id,
-      description: input.description,
-      caller: input.caller,
-      subagent: input.subagent,
-      session: parent,
-      mcp: input.mcp,
-      depth: input.depth,
-      maxDepth: input.maxDepth,
-    })
+    const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
+    const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
 
-    const taskId = yield* SwarmState.createTask({
-      swarmId: input.swarmId,
-      parentId: parent.id,
-      actor: input.actor,
-      corrId: input.corrId,
-    })
-
-    const child = yield* sessions.create({
-      parentID: parent.id,
-      title: plan.title,
-      agent: plan.agent,
-      model: input.subagent.model
-        ? {
-            id: input.subagent.model.modelID,
-            providerID: input.subagent.model.providerID,
-            variant: input.subagent.variant,
-          }
-        : undefined,
-      permission: plan.permission,
-    }).pipe(
-      Effect.tapError(() =>
-        SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(Effect.ignore),
-      ),
-    )
-
-    const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
-    const admission = yield* SwarmDispatcher.admit({
-      taskId,
-      ownerId,
-      leaseMs: input.leaseMs ?? 30_000,
-      actor: input.actor,
-      corrId: input.corrId,
-    })
-
-    const model = child.model ?? parent.model
-    if (!model) return yield* Effect.fail(new InvalidInput({ message: `no model available for worker ${child.id}` }))
-
-    const prepare = prompt
-      .prompt({
+    const execute = Effect.gen(function* () {
+      const child = yield* sessions.create({
+        parentID: parent.id,
+        title: plan.title,
+        agent: plan.agent,
+        model: input.subagent.model ? { id: input.subagent.model.modelID, providerID: input.subagent.model.providerID, variant: input.subagent.variant } : undefined,
+        permission: plan.permission,
+      })
+      const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
+      const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
+      const model = child.model ?? parent.model
+      if (!model) return yield* Effect.fail(new InvalidInput({ message: `no model available for worker ${child.id}` }))
+      const prepare = prompt.prompt({
         messageID: MessageID.ascending(),
         sessionID: child.id,
         model: { modelID: model.id, providerID: model.providerID },
         variant: model.variant,
         agent: plan.agent,
-        tools: {
-          question: false,
-          ...(plan.canTodo ? {} : { todowrite: false }),
-          ...(plan.canTask ? {} : { task: false }),
-        },
+        tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) },
         parts: [{ type: "text", text: input.prompt }],
-      })
-      .pipe(Effect.asVoid)
-
-    yield* SwarmWorker.resumeSession({
-      taskId,
-      sessionId: child.id,
-      leaseId: admission.leaseId,
-      fence: admission.fence,
-      actor: input.actor,
-      corrId: input.corrId,
-      leaseMs: input.leaseMs,
-      renewalIntervalMs: input.renewalIntervalMs,
-      prepare,
+      }).pipe(Effect.asVoid)
+      yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, prepare })
+      return { taskId, sessionId: child.id, agent: plan.agent }
     })
-    return { taskId, sessionId: child.id, agent: plan.agent }
+
+    return yield* execute.pipe(
+      Effect.catchAll((error) =>
+        SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(
+          Effect.ignore,
+          Effect.andThen(Effect.fail(error)),
+        ),
+      ),
+    )
   })
 
-  /** Run multiple specialized workers concurrently against one swarm. */
-  export const runPlannedBatch = Effect.fn("SwarmRuntime.runPlannedBatch")(function* (input: {
-    workers: readonly PlannedInput[]
-    concurrency?: number
-  }) {
+  export const runPlannedBatch = Effect.fn("SwarmRuntime.runPlannedBatch")(function* (input: { workers: readonly PlannedInput[]; concurrency?: number }) {
     if (input.workers.length === 0) return []
     const concurrency = input.concurrency ?? input.workers.length
-    if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
-      return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
-    }
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1) return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
     return yield* Effect.all(input.workers.map((worker) => runPlanned(worker)), { concurrency })
   })
 }
