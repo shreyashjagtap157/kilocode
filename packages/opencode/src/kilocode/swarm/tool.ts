@@ -34,6 +34,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
     parameters: Parameters,
     execute: (args, ctx) => Effect.gen(function* () {
       if (args.workers.length === 0) return yield* Effect.fail(new Error("swarm requires at least one worker"))
+      if (args.workers.length > 12) return yield* Effect.fail(new Error("swarm supports at most 12 workers per invocation"))
       const caller = yield* Agent.get(ctx.agent)
       const sessions = yield* Session.Service
       const parent = yield* sessions.get(ctx.sessionID as SessionID)
@@ -59,6 +60,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         role: args.workers[entry.index]?.role ?? entry.result.agent,
         taskId: entry.result.taskId,
         sessionId: entry.result.sessionId,
+        durationMs: entry.result.durationMs,
         finding: finding(reports[reportIndex] ?? []),
       }))
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
@@ -67,7 +69,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         output: [
           `Swarm objective: ${args.objective}`,
           `Workers completed: ${entries.length}/${args.workers.length}`,
-          ...entries.flatMap((entry, index) => [`\n## ${index + 1}. ${entry.role}`, entry.finding, `(task=${entry.taskId}, session=${entry.sessionId})`]),
+          ...entries.flatMap((entry, index) => [`\n## ${index + 1}. ${entry.role}`, entry.finding, `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`]),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
         ].join("\n"),
         metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, workers: entries, failures },
