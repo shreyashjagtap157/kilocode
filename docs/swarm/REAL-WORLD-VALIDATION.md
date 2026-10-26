@@ -23,6 +23,10 @@ A real configured provider/model run must demonstrate all of the following:
 9. Lease loss prevents stale workers from committing completion.
 10. Restart/recovery does not create duplicate authoritative execution.
 11. Worker permissions never exceed the derived Kilo permission ceiling.
+12. Each worker result eligible for acceptance is reviewed by a separate reviewer task/session; self-review is never substituted when too few workers finish.
+13. Passing criteria link to evidence, and a claimed passing command matches a completed persisted Kilo shell-tool part in that reviewer session, including command, exit code, and output digest.
+14. A later blocked review overrides an earlier pass, and a parent task remains unaccepted while any direct child is not accepted/integrated.
+15. Reviewer failures, missing reviewers, mismatched sessions, failed commands, or forged evidence remain visible as unaccepted outcomes.
 
 ## Usefulness benchmark
 
@@ -41,3 +45,5 @@ Swarm mode is useful only when the parallel specialist result provides materiall
 ## Evidence policy
 
 Do not mark this document as qualified from unit tests alone. Mocked tests establish orchestration correctness. Real provider execution establishes operational usefulness. CI establishes repeatability. Both are required for a successful qualification claim.
+
+For the evidence-backed review gate, a committed regression test is not a test result. The focused swarm tests and OpenCode typecheck must execute and pass in CI, and a real configured provider/model run must demonstrate that the reviewer's persisted session parts contain the same command, exit code, and output digest used by the acceptance gate. Until that evidence exists, describe the gate as implemented but not CI-qualified.
