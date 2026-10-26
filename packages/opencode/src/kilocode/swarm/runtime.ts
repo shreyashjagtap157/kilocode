@@ -65,16 +65,29 @@ export namespace SwarmRuntime {
         return yield* Effect.fail(new InvalidInput({ message: `parent task ${parentTaskId} is not actively executing` }))
       }
     }
-    const plan = DynamicAgentFactory.plan({ parentID: parent.id, description: input.description, caller: input.caller, subagent: input.subagent, session: parent, mcp: input.mcp, depth: input.depth, maxDepth: input.maxDepth })
+    const cfg = yield* config.get()
+    const plan = DynamicAgentFactory.plan({
+      parentID: parent.id,
+      description: input.description,
+      caller: input.caller,
+      subagent: input.subagent,
+      session: parent,
+      mcp: input.mcp ?? cfg.mcp,
+      primaryTools: cfg.experimental?.primary_tools,
+      depth: input.depth,
+      maxDepth: input.maxDepth,
+    })
     const executionPlan = input.readOnly
       ? {
           ...plan,
-          permission: DynamicAgentFactory.intersect(plan.permission, DynamicAgentFactory.readOnlyPermissions),
+          permission: DynamicAgentFactory.readOnlyPermissions({
+            agentPermission: input.subagent.permission,
+            ceiling: plan.permission,
+          }),
           canTask: false,
           canTodo: false,
         }
       : plan
-    const cfg = yield* config.get()
     const resolved = yield* KiloTask.resolveModel({ name: executionPlan.agent, agent: input.subagent, config: cfg, parent: { modelID: parent.model.id, providerID: parent.model.providerID }, variant: input.subagent.variant, provider, selection: {} })
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parentTaskId, actor: input.actor, corrId: input.corrId })
 
