@@ -132,8 +132,8 @@ export namespace SwarmVerification {
    * a shell command actually ran.
    */
   const isValidationCommand = (command: string) => {
-    const runner = /(?:^|[;&|]\\s*)(?:bun|npm|pnpm|yarn|cargo|go|pytest|python3?|uv|ruff|eslint|tsc|deno|gradle|mvn|dotnet|make|biome|prettier|git|pwsh|powershell|cmd|invoke-pester)\\b/i
-    const validation = /\\b(?:test|tests|typecheck|type-check|lint|clippy|verify|validate|build|format|fmt|check|compile|pytest|unittest|tsc|eslint|ruff)\\b/i
+    const runner = /(?:^|[;&|]\s*)(?:bun|npm|pnpm|yarn|cargo|go|pytest|python3?|uv|ruff|eslint|tsc|deno|gradle|mvn|dotnet|make|biome|prettier|git|pwsh|powershell|cmd|invoke-pester)\b/i
+    const validation = /\b(?:test|tests|typecheck|type-check|lint|clippy|verify|validate|build|format|fmt|check|compile|pytest|unittest|tsc|eslint|ruff)\b/i
     return runner.test(command) && validation.test(command)
   }
 
