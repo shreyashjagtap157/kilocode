@@ -10,6 +10,7 @@ on:
       - 'packages/core/test/database-migration.test.ts'
       - 'packages/core/test/event.test.ts'
       - 'packages/opencode/src/kilocode/swarm/**'
+      - 'packages/opencode/src/kilocode/tool/registry.ts'
       - 'packages/opencode/test/kilocode/swarm/**'
       - 'packages/opencode/test/kilocode/fixture/swarm-admission-worker.ts'
       - '.github/workflows/m2-swarm-foundation.yml'
@@ -22,6 +23,7 @@ on:
       - 'packages/core/test/database-migration.test.ts'
       - 'packages/core/test/event.test.ts'
       - 'packages/opencode/src/kilocode/swarm/**'
+      - 'packages/opencode/src/kilocode/tool/registry.ts'
       - 'packages/opencode/test/kilocode/swarm/**'
       - 'packages/opencode/test/kilocode/fixture/swarm-admission-worker.ts'
       - '.github/workflows/m2-swarm-foundation.yml'
@@ -37,7 +39,7 @@ jobs:
   verify:
     name: Migration and swarm regression
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -61,6 +63,10 @@ jobs:
         run: bun test test/kilocode/swarm --timeout 60000
         env:
           KILO_EXPERIMENTAL_DISABLE_FILEWATCHER: 'true'
+
+      - name: Typecheck OpenCode swarm integration
+        working-directory: packages/opencode
+        run: bun run typecheck
 
       - name: Verify generated schema is committed
         run: git diff --exit-code -- packages/core/src/database/schema.gen.ts
