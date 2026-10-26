@@ -197,17 +197,23 @@ export namespace SwarmVerification {
         const state = part ? record(part.state) : undefined
         const args = state ? record(state.input) : undefined
         const metadata = state ? record(state.metadata) : undefined
+        const command = args?.command
+        const exitCode = metadata?.exit
         const output = state?.output
         const matched =
-          part?.type === "tool" &&
+          part !== undefined &&
+          part.type === "tool" &&
           part.tool === "bash" &&
           part.callID === execution.callId &&
-          state?.status === "completed" &&
+          state !== undefined &&
+          state.status === "completed" &&
           state.time !== undefined &&
-          args?.command === execution.command &&
-          normalizeCommand(String(args.command)) === normalizeCommand(execution.command) &&
-          typeof metadata?.exit === "number" &&
-          metadata.exit === execution.exitCode &&
+          typeof command === "string" &&
+          command === execution.command &&
+          normalizeCommand(command) === normalizeCommand(execution.command) &&
+          typeof exitCode === "number" &&
+          exitCode === 0 &&
+          exitCode === execution.exitCode &&
           typeof output === "string" &&
           createHash("sha256").update(output).digest("hex") === execution.outputSha256
 
