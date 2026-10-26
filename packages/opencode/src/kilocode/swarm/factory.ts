@@ -108,26 +108,37 @@ const shellDeniedPrefixes = [
  * is a tool-permission ceiling rather than an OS/filesystem sandbox. The policy is
  * intersected with the original plan and never grants a capability it lacked.
  */
-export const readOnlyPermissions: Permission.Rule[] = [
-  // Neutral default for capabilities not explicitly restricted below. Intersecting
-  // this ceiling with the original plan can only preserve or reduce authority.
-  { permission: "*", pattern: "*", action: "allow" },
-  { permission: "edit", pattern: "*", action: "deny" },
-  { permission: "write", pattern: "*", action: "deny" },
-  { permission: "apply_patch", pattern: "*", action: "deny" },
-  { permission: "task", pattern: "*", action: "deny" },
-  { permission: "todowrite", pattern: "*", action: "deny" },
-  { permission: "bash", pattern: "*", action: "deny" },
-  ...readOnlyShellCommands.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })),
-  ...shellDeniedPrefixes.map((pattern) => ({ permission: "bash", pattern, action: "deny" as const })),
-  ...readOnlyShellCommands.flatMap((pattern) =>
-    shellOperatorSuffixes.map((operator) => ({
-      permission: "bash",
-      pattern: `${pattern}${operator}*`,
-      action: "deny" as const,
-    })),
-  ),
-]
+export function readOnlyPermissions(input: {
+  agentPermission: Permission.Ruleset
+  ceiling: Permission.Ruleset
+}): Permission.Rule[] {
+  // The session stores overrides, not the complete effective agent policy.
+  // Emit a shell allow only when the selected agent and inherited ceiling already
+  // allow that command; do not let a reviewer role widen provider/user permissions.
+  const allowedShellCommands = readOnlyShellCommands.filter(
+    (pattern) => Permission.evaluate("bash", pattern, input.agentPermission, input.ceiling).action === "allow",
+  )
+  return KiloTask.merge(
+    input.ceiling,
+    [
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "write", pattern: "*", action: "deny" },
+      { permission: "apply_patch", pattern: "*", action: "deny" },
+      { permission: "task", pattern: "*", action: "deny" },
+      { permission: "todowrite", pattern: "*", action: "deny" },
+      { permission: "bash", pattern: "*", action: "deny" },
+      ...allowedShellCommands.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })),
+      ...shellDeniedPrefixes.map((pattern) => ({ permission: "bash", pattern, action: "deny" as const })),
+      ...allowedShellCommands.flatMap((pattern) =>
+        shellOperatorSuffixes.map((operator) => ({
+          permission: "bash",
+          pattern: \`\${pattern}\${operator}*\`,
+          action: "deny" as const,
+        })),
+      ),
+    ],
+  )
+}
 const restrictiveness: Record<Action, number> = { allow: 0, ask: 1, deny: 2 }
 const specificity = (pattern: string) => pattern.replaceAll("*", "").length
 
@@ -163,6 +174,7 @@ export type Input = {
   mcp?: Config.Info["mcp"]
   depth?: number
   maxDepth?: number
+  primaryTools?: readonly string[]
 }
 
 export const DynamicAgentFactory = {
@@ -177,13 +189,16 @@ export const DynamicAgentFactory = {
     const canTodo = input.subagent.permission.some((rule) => rule.permission === "todowrite")
     const derived = deriveSubagentSessionPermission({ parentSessionPermission: session, subagent: input.subagent })
     const ceiling = KiloTask.permissions(rules, canTask)
+    const primaryTools = input.primaryTools?.map((permission) => ({ permission, pattern: "*", action: "deny" as const })) ?? []
     const agent = input.subagent.name
     return {
       kind: "swarm-worker-plan",
       parentID: input.parentID,
       agent,
       title: `${input.description} (@${agent} subagent)`,
-      permission: intersect(derived, ceiling, input.subagent.permission),
+      // Session permissions are restrictive overrides. The selected agent's own
+      // rules remain authoritative for capabilities; only hard ceilings are stored.
+      permission: KiloTask.merge(derived, primaryTools, ceiling),
       canTask,
       canTodo,
     }
