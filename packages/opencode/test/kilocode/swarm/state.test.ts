@@ -639,4 +639,136 @@ describe("swarm state (M2)", () => {
       file,
     )
   })
+
+  test("acceptance gate refuses a task without an independent review", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_acceptance" as any })
+        let version = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: version, actor: "act_test", corrId: "cor_acceptance" as any })
+          version += 1
+        }
+
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: version, actor: "act_test", corrId: "cor_acceptance" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("reviewing")
+        expect(task.version).toBe(version)
+        const { db } = yield* Database.Service
+        const acceptedTransitions = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = ${taskId} AND to_state = 'accepted'
+        `)
+        expect(acceptedTransitions?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
+  test("acceptance gate permits a task only after a structured independent passing review", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_worker" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_reviewer" as any })
+        let workerVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: workerVersion, actor: "act_test", corrId: "cor_worker" as any })
+          workerVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_reviewer" as any })
+          reviewerVersion += 1
+        }
+
+        const review = yield* SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId: "ses_independent_reviewer",
+          reviewerAgent: "reviewer",
+          corrId: "cor_review_record" as any,
+          report: {
+            verdict: "pass",
+            summary: "The worker output satisfies the declared test criterion.",
+            checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{
+              id: "e1", kind: "command", reference: "bun test test/kilocode/swarm/state.test.ts",
+              detail: "Targeted test command completed successfully.", result: "pass", exitCode: 0,
+            }],
+            blockingFindings: [],
+            uncertainties: [],
+          },
+        })
+        expect(review.accepted).toBe(true)
+        const result = yield* SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: workerVersion, actor: "act_test", corrId: "cor_acceptance" as any,
+        })
+        expect(result.version).toBe(workerVersion + 1)
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("accepted")
+      }),
+      file,
+    )
+  })
+
+  test("acceptance gate rechecks independent review inside the durable transition transaction", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_worker_race" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_reviewer_race" as any })
+        let workerVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: workerVersion, actor: "act_test", corrId: "cor_worker_race" as any })
+          workerVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_reviewer_race" as any })
+          reviewerVersion += 1
+        }
+        yield* SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId: "ses_racing_reviewer",
+          reviewerAgent: "reviewer",
+          corrId: "cor_review_race" as any,
+          report: {
+            verdict: "pass",
+            summary: "Initial review passes but is removed in the transition transaction.",
+            checks: [{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{ id: "e1", kind: "test", reference: "unit-tests", detail: "Passed initially.", result: "pass", exitCode: 0 }],
+            blockingFindings: [],
+            uncertainties: [],
+          },
+        })
+        const { db } = yield* Database.Service
+        const events = yield* EventV2.Service
+        // Simulate a concurrent review invalidation after preflight but inside
+        // EventV2's transaction, so the CAS commit-time qualification check must reject.
+        yield* events.project(SwarmTaskTransitioned, () =>
+          db.run(sql`DELETE FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'`).pipe(Effect.asVoid, Effect.orDie),
+        )
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: workerVersion, actor: "act_test", corrId: "cor_acceptance_race" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("reviewing")
+        expect(task.version).toBe(workerVersion)
+        const reviewEvent = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'
+        `)
+        expect(reviewEvent?.count).toBe(1)
+      }),
+      file,
+    )
+  })
+
 })
