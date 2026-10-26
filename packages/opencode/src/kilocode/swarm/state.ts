@@ -281,6 +281,17 @@ export namespace SwarmState {
       if (evidenceProblems.length > 0) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review evidence is invalid: ${evidenceProblems[0]}` }))
       }
+
+      // Finally tie the review proof back to the canonical SessionEvent tool
+      // call and success rows stored by Kilo for this exact reviewer session.
+      // A syntactically plausible forged command record cannot qualify a task.
+      const hostProblems = yield* SwarmVerification.hostExecutionProblems(db, {
+        executionEvidenceJson: data.executionEvidenceJson,
+        reviewerSessionId: data.reviewerSessionId,
+      }).pipe(Effect.orDie)
+      if (hostProblems.length > 0) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} host execution verification failed: ${hostProblems[0]}` }))
+      }
     })
 
   export const transition = Effect.fn("SwarmState.transition")(function* (input: {
