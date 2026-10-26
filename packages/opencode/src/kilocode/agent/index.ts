@@ -18,6 +18,7 @@ import PROMPT_DEBUG from "../../agent/prompt/debug.txt"
 import PROMPT_ORCHESTRATOR from "../../agent/prompt/orchestrator.txt"
 import PROMPT_ASK from "../../agent/prompt/ask.txt"
 import PROMPT_EXPLORE from "../../agent/prompt/explore.txt"
+import PROMPT_SWARM from "../swarm/mode-prompt.txt"
 
 const mermaidClients = new Set(["vscode", "jetbrains"])
 
@@ -637,6 +638,29 @@ export function patchAgents(
     mode: "primary",
     native: true,
     deprecated: true,
+  }
+
+  // Add native Swarm execution mode so it is available in installed Kilo CLI sessions,
+  // not only when the current project happens to contain a custom .kilocodemodes file.
+  // Swarm inherits the normal code-agent permission ceiling and only adds its orchestration
+  // and shared-board tools. Explicit user rules remain last and can still deny either tool.
+  const swarmTools = Permission.fromConfig({
+    swarm: "allow",
+    ...(kilo.board ? { board_read: "allow" as const, board_post: "allow" as const } : {}),
+  })
+  agents.swarm = {
+    name: "swarm",
+    description: "Coordinate substantive work as a durable team of specialist agents that communicate through Kilo's shared board, verify one another's findings, and synthesize evidence-backed results.",
+    prompt: PROMPT_SWARM,
+    options: {},
+    permission: Permission.merge(
+      defaults,
+      agents.code?.permission ?? Permission.merge(defaults, user),
+      swarmTools,
+      user,
+    ),
+    mode: "primary",
+    native: true,
   }
 
   // Add ask agent
