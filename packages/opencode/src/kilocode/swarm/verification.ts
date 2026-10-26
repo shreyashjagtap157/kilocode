@@ -121,6 +121,35 @@ export namespace SwarmVerification {
     return [...new Set(result)]
   }
 
+  // Re-run the exact same structural/evidence checks against the durable event
+  // payload at the authoritative state-transition boundary. This prevents code
+  // from bypassing recordReview and publishing a bare "review_passed" event.
+  export const qualificationProblems = (input: {
+    summary: unknown
+    evidenceJson: unknown
+    checksJson: unknown
+    blockingFindingsJson: unknown
+    uncertaintiesJson: unknown
+    executionEvidenceJson: unknown
+    reviewerSessionId: string
+  }) => {
+    const parseJson = (value: unknown) => (typeof value === "string" ? JSON.parse(value) : value)
+    try {
+      const report = Schema.decodeUnknownSync(ReviewReportSchema)({
+        verdict: "pass",
+        summary: input.summary,
+        evidence: parseJson(input.evidenceJson),
+        checks: parseJson(input.checksJson),
+        blockingFindings: parseJson(input.blockingFindingsJson),
+        uncertainties: parseJson(input.uncertaintiesJson),
+      })
+      const executions = Schema.decodeUnknownSync(Schema.Array(VerifiedExecutionSchema))(parseJson(input.executionEvidenceJson))
+      return problems(report, false, executions, input.reviewerSessionId)
+    } catch {
+      return ["stored review evidence failed schema validation"]
+    }
+  }
+
   export const recordReview = Effect.fn("SwarmVerification.recordReview")(function* (input: {
     taskId: string
     reviewerTaskId: string
