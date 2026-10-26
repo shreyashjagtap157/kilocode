@@ -95,6 +95,10 @@ jobs:
           KILO_VERSION: 0.0.0-smoke
           KILO_SKIP_BUNDLED_BWRAP: "1"
 
+      - name: Install the locally packed CLI into a clean prefix
+        working-directory: packages/opencode
+        run: bun run script/cli-install-smoke.ts
+
       - name: Run compiled PTY smoke
         if: runner.os != 'Windows'
         working-directory: packages/opencode
