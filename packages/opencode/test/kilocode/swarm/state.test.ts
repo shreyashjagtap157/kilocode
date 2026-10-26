@@ -1192,4 +1192,61 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("acceptance gate blocks unqualified child tasks", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    const command = "bun test test/kilocode/swarm/state.test.ts"
+    const reviewerSessionId = "ses_child_gate_reviewer"
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_child_parent" as any })
+        const childTaskId = yield* SwarmState.createTask({ swarmId, parentId: taskId, actor: "act_test", corrId: "cor_child_pending" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_child_reviewer" as any })
+        let targetVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_child_parent" as any })
+          targetVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_child_reviewer" as any })
+          reviewerVersion += 1
+        }
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, ${reviewerSessionId}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        yield* seedHostCommandPart(db, { sessionId: reviewerSessionId, command })
+        const review = yield* SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId,
+          reviewerAgent: "reviewer",
+          corrId: "cor_child_review" as any,
+          executedCommands: [verifiedCommand(command, reviewerSessionId)],
+          report: {
+            verdict: "pass",
+            summary: "The parent work passed independent review, but its child is unfinished.",
+            checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{ id: "e1", kind: "test", reference: command, detail: "Tests completed successfully.", result: "pass", exitCode: 0 }],
+            blockingFindings: [],
+            uncertainties: [],
+          },
+        })
+        expect(review.accepted).toBe(true)
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: targetVersion, actor: "act_test", corrId: "cor_child_accept" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const parent = yield* SwarmState.getTask(taskId)
+        const child = yield* SwarmState.getTask(childTaskId)
+        expect(parent.state).toBe("reviewing")
+        expect(child.state).toBe("queued")
+      }),
+      file,
+    )
+  })
+
 })
