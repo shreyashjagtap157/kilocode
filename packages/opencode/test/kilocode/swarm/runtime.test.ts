@@ -14,6 +14,8 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { SwarmRuntime } from "@/kilocode/swarm/runtime"
 import { SwarmState } from "@/kilocode/swarm/state"
+import { SwarmDispatcher } from "@/kilocode/swarm/dispatcher"
+import { SwarmWorker } from "@/kilocode/swarm/worker"
 import { tmpdir } from "../../fixture/fixture"
 
 const parentID = SessionID.make("ses_swarm_parent")
@@ -105,11 +107,88 @@ describe("SwarmRuntime planned worker path (M3)", () => {
           .get<{ state: string; parent_id: string | null }>(sql`SELECT state, parent_id FROM kilo_swarm_task WHERE swarm_id = ${swarmId}`)
           .pipe(Effect.orDie)
         expect(task?.state).toBe("reviewing")
-        expect(task?.parent_id).toBe(parentID)
+        expect(task?.parent_id).toBeNull()
       }),
       (tmp as any).path + "/swarm.db",
       undefined,
       (input) => { created = input },
+    )
+  })
+
+  test("links nested swarm tasks to the active parent task, not its session ID", async () => {
+    await using tmp = await tmpdir()
+    await use(
+      Effect.gen(function* () {
+        const parentSwarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
+        const parentTaskId = yield* SwarmState.createTask({
+          swarmId: parentSwarmId,
+          actor: "act_nested_parent",
+          corrId: "cor_nested_parent" as any,
+        })
+        const admission = yield* SwarmDispatcher.admit({
+          taskId: parentTaskId,
+          ownerId: "wrk_nested_parent",
+          leaseMs: 60_000,
+          actor: "act_nested_parent",
+          corrId: "cor_nested_parent_admit" as any,
+        })
+        yield* SwarmWorker.bindSession({
+          taskId: parentTaskId,
+          sessionId: parentID,
+          leaseId: admission.leaseId,
+          fence: admission.fence,
+          corrId: "cor_nested_parent_bind",
+        })
+        yield* SwarmDispatcher.startExecution({
+          taskId: parentTaskId,
+          leaseId: admission.leaseId,
+          fence: admission.fence,
+          actor: "act_nested_parent",
+          corrId: "cor_nested_parent_start" as any,
+        })
+
+        const nestedSwarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const result = yield* SwarmRuntime.runPlanned({
+          swarmId: nestedSwarmId,
+          parentSessionId: parentID,
+          description: "nested specialist work",
+          prompt: "Perform a delegated subtask and report evidence.",
+          caller: agent("worker", Permission.fromConfig({ read: "allow" })),
+          subagent: agent("nested-worker", Permission.fromConfig({ read: "allow" })),
+          actor: "act_nested_child",
+          corrId: "cor_nested_child" as any,
+        })
+
+        const { db } = yield* Database.Service
+        const child = yield* db.get<{ parent_id: string | null; state: string; swarm_id: string }>(sql`
+          SELECT parent_id, state, swarm_id FROM kilo_swarm_task WHERE id = ${result.taskId}
+        `).pipe(Effect.orDie)
+        expect(child?.swarm_id).toBe(nestedSwarmId)
+        expect(child?.parent_id).toBe(parentTaskId)
+        expect(child?.parent_id).not.toBe(parentID)
+        expect(child?.state).toBe("reviewing")
+
+        const parent = yield* SwarmState.getTask(parentTaskId)
+        expect(parent.state).toBe("running")
+        const parentAcceptance = yield* Effect.exit(SwarmState.transition({
+          taskId: parentTaskId,
+          to: "reviewing",
+          expectedVersion: parent.version,
+          actor: "act_nested_parent",
+          corrId: "cor_nested_parent_review" as any,
+        }))
+        expect(parentAcceptance._tag).toBe("Success")
+        const reviewTask = yield* SwarmState.getTask(parentTaskId)
+        const acceptance = yield* Effect.exit(SwarmState.transition({
+          taskId: parentTaskId,
+          to: "accepted",
+          expectedVersion: reviewTask.version,
+          actor: "act_nested_parent",
+          corrId: "cor_nested_parent_accept" as any,
+        }))
+        expect(acceptance._tag).toBe("Failure")
+      }),
+      (tmp as any).path + "/swarm.db",
     )
   })
 
