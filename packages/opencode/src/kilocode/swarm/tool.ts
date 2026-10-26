@@ -7,6 +7,7 @@ import * as MessageV2 from "@/session/message-v2"
 import { BoardStore } from "@/kilocode/board/store"
 import { SwarmRuntime } from "./runtime"
 import { SwarmState } from "./state"
+import { SwarmVerification } from "./verification"
 import { DynamicAgentFactory } from "./factory"
 
 const Worker = Schema.Struct({ agent: Schema.String, role: Schema.String, prompt: Schema.String })
@@ -28,14 +29,32 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : typeof error === "string" ? error : String(error)
 }
 
+function parseReview(text: string) {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1]
+  const candidate = fenced ?? text.trim()
+  try {
+    return JSON.parse(candidate)
+  } catch {
+    return {
+      verdict: "inconclusive",
+      summary: "Reviewer did not return valid JSON matching the evidence contract.",
+      checks: [], evidence: [],
+      blockingFindings: ["Reviewer output could not be parsed as JSON."],
+      uncertainties: ["Structured peer review is unavailable for this worker."],
+    }
+  }
+}
+
 export const SwarmTool: Tool.Info<typeof Parameters> = {
   id: "swarm",
   init: () => Effect.succeed({
-    description: "Run multiple configured Kilo specialist agents concurrently as a durable team swarm. Workers share Kilo's persistent session board so they can read team context, post findings, ask questions, and coordinate with peers while the parent synthesizes the result.",
+    description: "Run multiple configured Kilo specialist agents concurrently as a durable team swarm. Workers share Kilo's persistent session board, communicate with peers, then independently cross-review each other's completed work with structured evidence before a worker can be marked accepted.",
     parameters: Parameters,
     execute: (args, ctx) => Effect.gen(function* () {
       if (args.workers.length === 0) return yield* Effect.fail(new Error("swarm requires at least one worker"))
       if (args.workers.length > 12) return yield* Effect.fail(new Error("swarm supports at most 12 workers per invocation"))
+      if (args.workers.length < 2) return yield* Effect.fail(new Error("verified swarm mode requires at least two workers so work can be independently peer-reviewed"))
+
       const caller = yield* Agent.get(ctx.agent)
       const sessions = yield* Session.Service
       const parent = yield* sessions.get(ctx.sessionID as SessionID)
@@ -44,9 +63,6 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         DynamicAgentFactory.plan({ parentID: parent.id, description: args.workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
       }
 
-      // Kilo's shared agent board is enabled by default and follows the parent
-      // session's ancestry. Initialize it before creating workers so every child
-      // session sees the same objective and can communicate with its peers.
       yield* BoardStore.scope(parent.id as SessionID)
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
       yield* BoardStore.post({
@@ -55,7 +71,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         callID: base,
         to: "ALL",
         type: "INFO",
-        body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post useful discoveries, blockers, questions, and verified findings for peers; avoid duplicating work already reported by another worker.`,
+        body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.`,
       })
 
       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
@@ -69,41 +85,99 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           `Task: ${worker.prompt}`,
           "",
           "TEAM COORDINATION PROTOCOL:",
-          "You are a member of a persistent Kilo agent team. Before doing substantive work, inspect the shared agent board for the objective and peer progress when the board tools are available.",
-          "During work, post concise discoveries, blockers, questions, and verified findings to the shared board so other workers can build on them. Do not merely wait for the parent; communicate useful intermediate results to teammates.",
-          "If another worker has already solved part of your task, build on its finding instead of duplicating the same investigation. If you disagree, post the evidence and explain the contradiction.",
-          "Before finishing, post your most important verified finding and any remaining uncertainty to the shared board. Your final response should still contain your complete role-specific result for the parent.",
+          "Inspect the shared agent board before substantive work when available.",
+          "Post concise discoveries, blockers, questions, and verified findings so peers can build on your work.",
+          "If another worker has already solved part of your task, build on that evidence instead of duplicating it. If you disagree, post the contradiction and supporting evidence.",
+          "Before finishing, post your strongest evidence-backed result and every remaining uncertainty to the shared board.",
         ].join("\n"),
         caller,
         subagent: resolved[index],
         actor: ctx.agent,
         corrId: `${base}_${index}` as any,
       }))
+
       const batch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: planned, concurrency: args.maxWorkers ?? args.workers.length })
       const reports = yield* Effect.forEach(batch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
       const entries = batch.completed.map((entry, reportIndex) => ({
+        index: entry.index,
         role: args.workers[entry.index]?.role ?? entry.result.agent,
         taskId: entry.result.taskId,
         sessionId: entry.result.sessionId,
         durationMs: entry.result.durationMs,
         finding: finding(reports[reportIndex] ?? []),
       }))
-      const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
-      const board = yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 50 })
+
+      // Second wave: each worker is independently reviewed by the next worker.
+      // This is intentionally a separate session/task so a worker cannot certify itself.
+      const reviewerPlans = entries.map((entry, reviewIndex) => {
+        const reviewerIndex = (entry.index + 1) % entries.length
+        return {
+          swarmId,
+          parentSessionId: parent.id,
+          description: `Peer reviewer for ${entry.role}`,
+          prompt: [
+            `You are the independent peer reviewer for worker ${entry.role}.`,
+            `Swarm objective: ${args.objective}`,
+            `Worker task: ${args.workers[entry.index]?.prompt ?? "unknown"}`,
+            "",
+            "WORKER FINDING TO VERIFY:",
+            entry.finding,
+            "",
+            "REVIEW RULES:",
+            "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.",
+            "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.",
+            "Run an appropriate test or validation command yourself when possible. A PASS requires at least one passing test/command with exitCode 0 and evidence linked to every passed criterion.",
+            "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}",
+            `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`,
+          ].join("\n"),
+          caller,
+          subagent: resolved[reviewerIndex],
+          actor: ctx.agent,
+          corrId: `${base}_review_${reviewIndex}` as any,
+        }
+      })
+      const reviewBatch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: reviewerPlans, concurrency: Math.min(args.workers.length, args.maxWorkers ?? args.workers.length) })
+      const reviewMessages = yield* Effect.forEach(reviewBatch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
+      const reviews = yield* Effect.forEach(reviewBatch.completed, (reviewEntry, index) => Effect.gen(function* () {
+        const target = entries[index]
+        const report = parseReview(finding(reviewMessages[index] ?? []))
+        const recorded = yield* SwarmVerification.recordReview({
+          taskId: target.taskId,
+          reviewerTaskId: reviewEntry.result.taskId,
+          reviewerSessionId: reviewEntry.result.sessionId,
+          reviewerAgent: reviewEntry.result.agent,
+          corrId: `${base}_review_commit_${index}`,
+          report,
+        }).pipe(Effect.catchAll((error) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [errorText(error)], evidence: [], checks: [] })))
+        if (recorded.accepted) {
+          const task = yield* SwarmState.getTask(target.taskId)
+          yield* SwarmState.transition({ taskId: target.taskId, to: "accepted", expectedVersion: task.version, actor: ctx.agent, corrId: `${base}_accept_${index}` }).pipe(Effect.catchAll(() => Effect.void))
+        }
+        return { workerTaskId: target.taskId, reviewerTaskId: reviewEntry.result.taskId, ...recorded }
+      }), { concurrency: "unbounded" })
+
+      const board = yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 100 })
       const communications = board.messages
         .filter((message) => message.from !== "main")
         .map((message) => ({ from: message.fromLabel ?? message.from, to: message.toLabel ?? message.to, type: message.type, body: message.body, id: message.id }))
+      const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
+      const accepted = reviews.filter((review) => review.accepted).length
       return {
-        title: `Swarm completed ${entries.length}/${args.workers.length} workers`,
+        title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
           `Swarm objective: ${args.objective}`,
           `Workers completed: ${entries.length}/${args.workers.length}`,
+          `Independent peer reviews: ${reviews.length}/${entries.length}`,
+          `Workers accepted after evidence gate: ${accepted}/${entries.length}`,
           `Team communications: ${communications.length}`,
-          ...entries.flatMap((entry, index) => [`\n## ${index + 1}. ${entry.role}`, entry.finding, `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`]),
+          ...entries.flatMap((entry, index) => {
+            const review = reviews.find((item) => item.workerTaskId === entry.taskId)
+            return [`\n## ${index + 1}. ${entry.role}`, entry.finding, `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`, ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.join("; ")}`] : []), `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`]
+          }),
           ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, workers: entries, failures, communications },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, independentlyVerifiedCount: accepted, workers: entries, reviews, failures, communications },
       }
     }),
   }),
