@@ -154,4 +154,37 @@ describe("DynamicAgentFactory", () => {
     })
     expect(deep.canTask).toBe(true)
   })
+  test("read-only reviewer policy allows inspection and validation but blocks mutations", () => {
+    const original = Permission.fromConfig({
+      "*": "allow",
+      board_read: "allow",
+      board_post: "allow",
+    })
+    const policy = DynamicAgentFactory.intersect(original, DynamicAgentFactory.readOnlyPermissions)
+
+    // Read-only review retains the source agent's existing safe capabilities.
+    expect(Permission.evaluate("read", "src/a.ts", policy).action).toBe("allow")
+    expect(Permission.evaluate("board_read", "*", policy).action).toBe("allow")
+    expect(Permission.evaluate("board_post", "*", policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "cat src/a.ts", policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "git status", policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts", policy).action).toBe("allow")
+
+    // The review ceiling cannot gain writes, arbitrary commands, or delegation.
+    for (const permission of ["edit", "write", "apply_patch", "task", "todowrite"]) {
+      expect(Permission.evaluate(permission, "*", policy).action).toBe("deny")
+    }
+    expect(Permission.evaluate("bash", "rm -rf src", policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts && rm -rf src", policy).action).toBe("deny")
+  })
+
+  test("read-only reviewer policy never grants a capability absent from the original plan", () => {
+    const original = Permission.fromConfig({ read: "allow", bash: "deny", edit: "deny" })
+    const policy = DynamicAgentFactory.intersect(original, DynamicAgentFactory.readOnlyPermissions)
+    expect(Permission.evaluate("read", "src/a.ts", policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts", policy).action).toBe("deny")
+    expect(Permission.evaluate("edit", "src/a.ts", policy).action).toBe("deny")
+  })
+
 })
