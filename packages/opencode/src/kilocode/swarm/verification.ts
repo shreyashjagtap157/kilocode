@@ -117,8 +117,8 @@ export namespace SwarmVerification {
           !currentTarget ||
           !currentReviewer ||
           currentTarget.id === currentReviewer.id ||
-          currentTarget.swarm_id !== preflight.swarm_id ||
-          currentReviewer.swarm_id !== preflight.swarm_id ||
+          currentTarget.swarm_id !== target.swarm_id ||
+          currentReviewer.swarm_id !== target.swarm_id ||
           currentTarget.state !== "reviewing" ||
           currentReviewer.state !== "reviewing"
         ) {
