@@ -30,7 +30,12 @@ export namespace SwarmWorker {
     }, { commit: () => Effect.gen(function* () {
       const current = yield* db.get<{ fence: number; state: string; cancel_requested: number }>(sql`SELECT fence, state, cancel_requested FROM kilo_swarm_task WHERE id = ${input.taskId}`)
       if (!current || current.fence !== input.fence || current.state !== task.state || current.cancel_requested !== 0) return yield* Effect.die(new ExecutionConflict({ message: `task changed before worker binding commit: ${input.taskId}` }))
-      yield* db.run(sql`INSERT INTO kilo_swarm_worker_binding (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated) VALUES (${input.taskId}, ${task.swarm_id}, ${input.sessionId}, ${claim.owner_id}, ${input.leaseId}, ${input.fence}, 'bound', ${now}, ${now}) ON CONFLICT(task_id) DO UPDATE SET session_id = excluded.session_id, owner_id = excluded.owner_id, lease_id = excluded.lease_id, fence = excluded.fence, state = 'bound', time_updated = excluded.time_updated`)
+      // The pre-read is only an optimization. The unique task_id constraint plus
+      // DO NOTHING is the actual concurrency gate: a racing binder can never
+      // replace the winner's session/lease/fence.
+      yield* db.run(sql`INSERT INTO kilo_swarm_worker_binding (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated) VALUES (${input.taskId}, ${task.swarm_id}, ${input.sessionId}, ${claim.owner_id}, ${input.leaseId}, ${input.fence}, 'bound', ${now}, ${now}) ON CONFLICT(task_id) DO NOTHING`)
+      const committed = yield* db.get<{ session_id: string; lease_id: string; fence: number }>(sql`SELECT session_id, lease_id, fence FROM kilo_swarm_worker_binding WHERE task_id = ${input.taskId}`)
+      if (!committed || committed.session_id !== input.sessionId || committed.lease_id !== input.leaseId || committed.fence !== input.fence) return yield* Effect.die(new ExecutionConflict({ message: `concurrent worker binding won for ${input.taskId}` }))
     }).pipe(Effect.orDie) })
     return { taskId: input.taskId, sessionId: input.sessionId, leaseId: input.leaseId, fence: input.fence }
   })
