@@ -45,6 +45,81 @@ export namespace SwarmWorker {
     return yield* db.get<{ task_id: string; swarm_id: string; session_id: string; owner_id: string; lease_id: string; fence: number; state: string }>(sql`SELECT task_id, swarm_id, session_id, owner_id, lease_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${taskId}`).pipe(Effect.orDie)
   })
 
+  /**
+   * Resolve a nested swarm's durable task parent from the currently executing
+   * Kilo session. A stale binding is an error, not permission to silently detach
+   * nested work and let its parent qualify without it.
+   */
+  export const parentTaskForSession = Effect.fn("SwarmWorker.parentTaskForSession")(function* (sessionId: string) {
+    const { db } = yield* Database.Service
+    const binding = yield* db.get<{
+      task_id: string
+      swarm_id: string
+      lease_id: string
+      binding_fence: number
+      binding_state: string
+      task_state: string | null
+      task_fence: number | null
+      cancel_requested: number | null
+      claim_lease_id: string | null
+      claim_fence: number | null
+      claim_state: string | null
+      claim_expires_at: number | null
+      reservation_lease_id: string | null
+      reservation_fence: number | null
+      reservation_state: string | null
+      reservation_expires_at: number | null
+    }>(sql`
+      SELECT
+        b.task_id,
+        b.swarm_id,
+        b.lease_id,
+        b.fence AS binding_fence,
+        b.state AS binding_state,
+        t.state AS task_state,
+        t.fence AS task_fence,
+        t.cancel_requested,
+        c.lease_id AS claim_lease_id,
+        c.fence AS claim_fence,
+        c.state AS claim_state,
+        c.expires_at AS claim_expires_at,
+        r.lease_id AS reservation_lease_id,
+        r.fence AS reservation_fence,
+        r.state AS reservation_state,
+        r.expires_at AS reservation_expires_at
+      FROM kilo_swarm_worker_binding b
+      LEFT JOIN kilo_swarm_task t ON t.id = b.task_id
+      LEFT JOIN kilo_swarm_claim c ON c.task_id = b.task_id
+      LEFT JOIN kilo_swarm_worker_reservation r ON r.task_id = b.task_id
+      WHERE b.session_id = ${sessionId}
+      LIMIT 1
+    `).pipe(Effect.orDie)
+    if (!binding) return undefined
+
+    const now = Date.now()
+    const active =
+      binding.binding_state === "bound" &&
+      binding.task_state === "running" &&
+      binding.cancel_requested === 0 &&
+      binding.binding_fence === binding.task_fence &&
+      binding.lease_id === binding.claim_lease_id &&
+      binding.binding_fence === binding.claim_fence &&
+      binding.claim_state === "active" &&
+      typeof binding.claim_expires_at === "number" &&
+      binding.claim_expires_at > now &&
+      binding.lease_id === binding.reservation_lease_id &&
+      binding.binding_fence === binding.reservation_fence &&
+      binding.reservation_state === "active" &&
+      typeof binding.reservation_expires_at === "number" &&
+      binding.reservation_expires_at > now
+    if (!active) {
+      return yield* Effect.fail(new ExecutionConflict({
+        message: `session ${sessionId} has a stale or inactive swarm task binding; nested work cannot be detached from its parent`,
+      }))
+    }
+    return binding.task_id
+  })
+
   /** Resume an admitted session while a lease supervisor renews ownership. */
   export const resumeSession = Effect.fn("SwarmWorker.resumeSession")(function* (input: {
     taskId: string; sessionId: string; leaseId: string; fence: number; actor: string; corrId: string; leaseMs?: number; renewalIntervalMs?: number
