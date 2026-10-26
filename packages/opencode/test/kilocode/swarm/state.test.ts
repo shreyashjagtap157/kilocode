@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -20,14 +21,19 @@ const fullLayer = (file: string) => {
 const use = (effect: any, file: string) =>
   Effect.runPromise(Effect.provide(fullLayer(file))(Effect.scoped(effect)))
 const dbFile = (tmp: any) => (tmp as any).path + "/swarm.db"
-const verifiedCommand = (command: string, sourceSessionId: string) => ({
+const verifiedCommand = (
+  command: string,
+  sourceSessionId: string,
+  exitCode = 0,
+  output = "tests passed",
+) => ({
   command,
-  exitCode: 0,
+  exitCode,
   sourceSessionId,
   messageId: "msg_test",
   partId: "part_test",
   callId: "call_test",
-  outputSha256: "a".repeat(64),
+  outputSha256: createHash("sha256").update(output).digest("hex"),
 })
 
 const seedHostCommandPart = (
