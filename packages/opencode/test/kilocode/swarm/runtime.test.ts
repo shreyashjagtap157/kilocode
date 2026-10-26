@@ -4,6 +4,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionDrain } from "@/kilocode/session/drain"
 import { sql } from "drizzle-orm"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
@@ -36,7 +37,7 @@ const sessionInfo = (id: SessionID, permission: Session.Info["permission"]): Ses
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }) as Session.Info
 
-const use = (effect: any, file: string, resume?: () => Effect.Effect<void>) => {
+const use = (effect: any, file: string, run?: () => Effect.Effect<void>) => {
   const db = Database.layerFromPath(file)
   const ev = EventV2.layerWith().pipe(Layer.provide(db))
   let childNumber = 0
@@ -50,21 +51,20 @@ const use = (effect: any, file: string, resume?: () => Effect.Effect<void>) => {
   const prompt = Layer.succeed(SessionPrompt.Service, {
     cancel: () => Effect.void,
     paused: () => Effect.succeed(false),
-    prompt: () => Effect.succeed(undefined as never),
+    prompt: () => run ? run().pipe(Effect.as(undefined as never)) : Effect.succeed(undefined as never),
     loop: () => Effect.succeed(undefined as never),
     shell: () => Effect.succeed(undefined as never),
     command: () => Effect.succeed(undefined as never),
     resolvePromptParts: () => Effect.succeed([]),
   } as unknown as SessionPrompt.Interface)
-  const execution = resume
-    ? Layer.succeed(SessionExecution.Service, {
-        active: Effect.succeed(new Set()),
-        resume: () => resume(),
-        wake: () => Effect.void,
-        interrupt: () => Effect.void,
-      })
-    : SessionExecution.noopLayer
-  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, prompt, execution, sessions))(Effect.scoped(effect)))
+  const drain = Layer.succeed(SessionDrain.Service, {
+    hold: () => Effect.succeed(() => undefined),
+    link: () => Effect.void,
+    wait: () => Effect.void,
+    track: (_id, work) => work,
+  } as unknown as SessionDrain.Interface)
+  const execution = SessionExecution.noopLayer
+  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, prompt, drain, execution, sessions))(Effect.scoped(effect)))
 }
 
 describe("SwarmRuntime planned worker path (M3)", () => {
