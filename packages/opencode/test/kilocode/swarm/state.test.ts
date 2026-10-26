@@ -57,7 +57,7 @@ const seedHostCommandPart = (
   `).pipe(Effect.orDie)
   yield* db.run(sql`
     INSERT OR IGNORE INTO message (id, session_id, time_created, time_updated, data)
-    VALUES (${"msg_test"}, ${input.sessionId}, ${now}, ${now}, ${JSON.stringify({ role: "assistant", time: { created: now, completed: now } })})
+    VALUES (${messageId}, ${input.sessionId}, ${now}, ${now}, ${JSON.stringify({ role: "assistant", time: { created: now, completed: now } })})
   `).pipe(Effect.orDie)
   const part = {
     type: "tool",
