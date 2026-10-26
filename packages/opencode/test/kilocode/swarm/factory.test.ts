@@ -22,24 +22,8 @@ const agent = (
 
 const session = (permission: Session.Info["permission"]): Pick<Session.Info, "permission"> => ({ permission })
 
-const rank = { deny: 0, ask: 1, allow: 2 } as const
-const permissions = [
-  "*",
-  "bash",
-  "edit",
-  "write",
-  "read",
-  "task",
-  "notebook_edit",
-  "notebook_execute",
-  "agent_manager",
-  "repo_clone",
-  "webfetch",
-]
-const patterns = ["*", "src/a.ts", "secrets/x", "rm -rf /", "git status"]
-
 describe("DynamicAgentFactory", () => {
-  test("AC3/AC4: plan reuses the task derivation and never widens permissions", () => {
+  test("AC3/AC4: plan persists restrictive session ceilings without replacing agent capabilities", () => {
     const caller = agent(
       "main",
       Permission.fromConfig({ edit: { "secrets/**": "deny" }, write: "deny", task: "deny" }),
@@ -66,18 +50,13 @@ describe("DynamicAgentFactory", () => {
     expect(Permission.evaluate("edit", "secrets/x", plan.permission).action).toBe("deny")
     expect(Permission.evaluate("bash", "git status", plan.permission).action).toBe("deny")
 
-    // No probe is ever more permissive than the caller, the parent session, or the worker agent.
-    for (const permission of permissions) {
-      for (const pattern of patterns) {
-        const worker = Permission.evaluate(permission, pattern, plan.permission).action
-        const callerAction = Permission.evaluate(permission, pattern, caller.permission).action
-        const sessionAction = Permission.evaluate(permission, pattern, parent.permission ?? []).action
-        const subagentAction = Permission.evaluate(permission, pattern, subagent.permission).action
-        expect(rank[worker]).toBeLessThanOrEqual(rank[callerAction])
-        expect(rank[worker]).toBeLessThanOrEqual(rank[sessionAction])
-        expect(rank[worker]).toBeLessThanOrEqual(rank[subagentAction])
-      }
-    }
+    // Session permissions are restrictive overrides, not a replacement for the
+    // selected agent's policy. Inherited denials survive, but the plan adds no allows.
+    expect(plan.permission.every((rule) => rule.action === "deny")).toBe(true)
+    expect(Permission.evaluate("read", "src/a.ts", plan.permission).action).not.toBe("allow")
+    expect(Permission.evaluate("edit", "src/a.ts", plan.permission).action).not.toBe("allow")
+    expect(Permission.evaluate("write", "src/a.ts", plan.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "*", plan.permission).action).toBe("deny")
   })
 
   test("AC3: parent-session denies form a hard ceiling over guarded tools", () => {
@@ -160,33 +139,34 @@ describe("DynamicAgentFactory", () => {
       board_read: "allow",
       board_post: "allow",
     })
-    const policy = DynamicAgentFactory.intersect(original, DynamicAgentFactory.readOnlyPermissions)
+    const policy = DynamicAgentFactory.readOnlyPermissions({ agentPermission: original, ceiling: [] })
 
-    // Read-only review retains the source agent's existing safe capabilities.
-    expect(Permission.evaluate("read", "src/a.ts", policy).action).toBe("allow")
-    expect(Permission.evaluate("board_read", "*", policy).action).toBe("allow")
-    expect(Permission.evaluate("board_post", "*", policy).action).toBe("allow")
-    expect(Permission.evaluate("bash", "cat src/a.ts", policy).action).toBe("allow")
-    expect(Permission.evaluate("bash", "git status", policy).action).toBe("allow")
-    expect(Permission.evaluate("bash", "bun test test/example.test.ts", policy).action).toBe("allow")
+    // The policy is a session override. It preserves the agent's existing safe
+    // reads/board tools and allows only shell validations that the agent already permits.
+    expect(Permission.evaluate("read", "src/a.ts", original, policy).action).toBe("allow")
+    expect(Permission.evaluate("board_read", "*", original, policy).action).toBe("allow")
+    expect(Permission.evaluate("board_post", "*", original, policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "cat src/a.ts", original, policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "git status", original, policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts", original, policy).action).toBe("allow")
 
     // The review ceiling cannot gain writes, arbitrary commands, or delegation.
     for (const permission of ["edit", "write", "apply_patch", "task", "todowrite"]) {
-      expect(Permission.evaluate(permission, "*", policy).action).toBe("deny")
+      expect(Permission.evaluate(permission, "*", original, policy).action).toBe("deny")
     }
-    expect(Permission.evaluate("bash", "rm -rf src", policy).action).toBe("deny")
-    expect(Permission.evaluate("bash", "rg --pre='touch /tmp/x' needle", policy).action).toBe("deny")
-    expect(Permission.evaluate("bash", "git diff --ext-diff", policy).action).toBe("deny")
-    expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", policy).action).toBe("deny")
-    expect(Permission.evaluate("bash", "bun test test/example.test.ts && rm -rf src", policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "rm -rf src", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "rg --pre='touch /tmp/x' needle", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git diff --ext-diff", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts && rm -rf src", original, policy).action).toBe("deny")
   })
 
   test("read-only reviewer policy never grants a capability absent from the original plan", () => {
     const original = Permission.fromConfig({ read: "allow", bash: "deny", edit: "deny" })
-    const policy = DynamicAgentFactory.intersect(original, DynamicAgentFactory.readOnlyPermissions)
-    expect(Permission.evaluate("read", "src/a.ts", policy).action).toBe("allow")
-    expect(Permission.evaluate("bash", "bun test test/example.test.ts", policy).action).toBe("deny")
-    expect(Permission.evaluate("edit", "src/a.ts", policy).action).toBe("deny")
+    const policy = DynamicAgentFactory.readOnlyPermissions({ agentPermission: original, ceiling: [] })
+    expect(Permission.evaluate("read", "src/a.ts", original, policy).action).toBe("allow")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("edit", "src/a.ts", original, policy).action).toBe("deny")
   })
 
 })
