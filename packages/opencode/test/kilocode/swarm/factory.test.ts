@@ -175,6 +175,8 @@ describe("DynamicAgentFactory", () => {
       expect(Permission.evaluate(permission, "*", policy).action).toBe("deny")
     }
     expect(Permission.evaluate("bash", "rm -rf src", policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "rg --pre='touch /tmp/x' needle", policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git diff --ext-diff", policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "bun test test/example.test.ts && rm -rf src", policy).action).toBe("deny")
   })
