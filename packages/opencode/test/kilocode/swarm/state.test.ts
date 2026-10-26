@@ -688,6 +688,12 @@ describe("swarm state (M2)", () => {
           reviewerVersion += 1
         }
 
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, "ses_independent_reviewer", "owner_test", "lease_test", 1, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
         const review = yield* SwarmVerification.recordReview({
           taskId,
           reviewerTaskId,
@@ -734,6 +740,12 @@ describe("swarm state (M2)", () => {
           yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_reviewer_race" as any })
           reviewerVersion += 1
         }
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, "ses_racing_reviewer", "owner_test", "lease_test", 1, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
         yield* SwarmVerification.recordReview({
           taskId,
           reviewerTaskId,
@@ -749,7 +761,6 @@ describe("swarm state (M2)", () => {
             uncertainties: [],
           },
         })
-        const { db } = yield* Database.Service
         const events = yield* EventV2.Service
         // Simulate a concurrent review invalidation after preflight but inside
         // EventV2's transaction, so the CAS commit-time qualification check must reject.
@@ -791,6 +802,11 @@ describe("swarm state (M2)", () => {
         }
 
         const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, "ses_racing_reviewer", "owner_test", "lease_test", 1, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
         const events = yield* EventV2.Service
         // Change the reviewer after preflight but in the review event transaction.
         // The commit hook must reject this review and roll back the injected change.
