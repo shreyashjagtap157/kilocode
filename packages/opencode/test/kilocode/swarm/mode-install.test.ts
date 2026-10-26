@@ -23,6 +23,7 @@ describe("Swarm execution mode installation", () => {
         expect.objectContaining({ permission: "read", action: "allow" }),
         expect.objectContaining({ permission: "edit", action: "allow" }),
         expect.objectContaining({ permission: "bash", action: "allow" }),
+        expect.objectContaining({ permission: "swarm", action: "allow" }),
       ]))
     } finally {
       await rm(root, { recursive: true, force: true })
