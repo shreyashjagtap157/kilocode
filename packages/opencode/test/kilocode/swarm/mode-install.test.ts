@@ -8,7 +8,7 @@ describe("Swarm execution mode installation", () => {
   test("project .kilocodemodes installs Swarm as a primary team agent", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kilo-swarm-mode-"))
     try {
-      const source = await readFile(path.resolve(import.meta.dir, "../../../../.kilocodemodes"), "utf8")
+      const source = await readFile(path.resolve(import.meta.dir, "../../../../../.kilocodemodes"), "utf8")
       await writeFile(path.join(root, ".kilocodemodes"), source)
 
       const result = await ModesMigrator.migrate({ projectDir: root, skipGlobalPaths: true })
@@ -21,12 +21,14 @@ describe("Swarm execution mode installation", () => {
       expect(swarm.prompt).toContain("durable swarm tool")
       expect(swarm.prompt).toContain("shared agent board")
       expect(swarm.prompt).toContain("post useful discoveries")
-      expect(swarm.permission).toEqual(expect.arrayContaining([
-        expect.objectContaining({ permission: "read", action: "allow" }),
-        expect.objectContaining({ permission: "edit", action: "allow" }),
-        expect.objectContaining({ permission: "bash", action: "allow" }),
-        expect.objectContaining({ permission: "swarm", action: "allow" }),
-      ]))
+      expect(swarm.permission).toMatchObject({
+        read: "allow",
+        edit: "allow",
+        bash: "allow",
+        swarm: "allow",
+        board_read: "allow",
+        board_post: "allow",
+      })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
