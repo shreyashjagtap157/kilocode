@@ -30,45 +30,33 @@ const verifiedCommand = (command: string, sourceSessionId: string) => ({
   outputSha256: "a".repeat(64),
 })
 
-const seedHostCommandEvents = (
+const seedHostCommandPart = (
   db: Database.Interface["db"],
-  input: { sessionId: string; command: string },
+  input: { sessionId: string; command: string; exitCode?: number; output?: string },
 ) => Effect.gen(function* () {
   const messageId = "msg_test"
+  const partId = "part_test"
   const callId = "call_test"
-  const timestamp = "2026-10-26T00:00:00.000Z"
-  const called = {
-    sessionID: input.sessionId,
-    timestamp,
-    assistantMessageID: messageId,
+  const now = Date.now()
+  const part = {
+    type: "tool",
     callID: callId,
     tool: "bash",
-    input: { command: input.command },
-    provider: { executed: true },
-  }
-  const succeeded = {
-    sessionID: input.sessionId,
-    timestamp,
-    assistantMessageID: messageId,
-    callID: callId,
-    structured: { exit: 0 },
-    content: [],
-    provider: { executed: true },
+    state: {
+      status: "completed",
+      input: { command: input.command },
+      output: input.output ?? "tests passed",
+      metadata: { exit: input.exitCode ?? 0 },
+      title: "test validation command",
+      time: { start: now, end: now },
+    },
   }
   yield* db.run(sql`
-    INSERT INTO event_sequence (aggregate_id, seq, owner_id)
-    VALUES (${input.sessionId}, 2, NULL)
-    ON CONFLICT(aggregate_id) DO UPDATE SET seq = excluded.seq
-  `).pipe(Effect.orDie)
-  yield* db.run(sql`
-    INSERT INTO event (id, aggregate_id, seq, type, data)
-    VALUES (${"evt_" + input.sessionId + "_called"}, ${input.sessionId}, 1, 'session.next.tool.called', ${JSON.stringify(called)})
-  `).pipe(Effect.orDie)
-  yield* db.run(sql`
-    INSERT INTO event (id, aggregate_id, seq, type, data)
-    VALUES (${"evt_" + input.sessionId + "_success"}, ${input.sessionId}, 2, 'session.next.tool.success', ${JSON.stringify(succeeded)})
+    INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+    VALUES (${partId}, ${messageId}, ${input.sessionId}, ${now}, ${now}, ${JSON.stringify(part)})
   `).pipe(Effect.orDie)
 })
+
 
 describe("swarm state (M2)", () => {
   test("creates a swarm and task", async () => {
@@ -743,7 +731,7 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_independent_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-        yield* seedHostCommandEvents(db, {
+        yield* seedHostCommandPart(db, {
           sessionId: "ses_independent_reviewer",
           command: "bun test test/kilocode/swarm/state.test.ts",
         })
@@ -800,7 +788,7 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-        yield* seedHostCommandEvents(db, {
+        yield* seedHostCommandPart(db, {
           sessionId: "ses_racing_reviewer",
           command: "bun test test/kilocode/swarm/state.test.ts",
         })
@@ -866,7 +854,7 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_racing_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-        yield* seedHostCommandEvents(db, {
+        yield* seedHostCommandPart(db, {
           sessionId: "ses_racing_reviewer",
           command: "bun test test/kilocode/swarm/state.test.ts",
         })
@@ -1087,7 +1075,7 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 1, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-        yield* seedHostCommandEvents(db, {
+        yield* seedHostCommandPart(db, {
           sessionId: "ses_latest_reviewer",
           command: "bun test test/kilocode/swarm/state.test.ts",
         })
