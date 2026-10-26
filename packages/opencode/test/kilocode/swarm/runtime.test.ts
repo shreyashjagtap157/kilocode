@@ -5,6 +5,8 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionDrain } from "@/kilocode/session/drain"
+import { Config } from "@/config/config"
+import { Provider } from "@/provider/provider"
 import { sql } from "drizzle-orm"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
@@ -20,6 +22,7 @@ const agent = (name: string, permission: Agent.Info["permission"], mode: Agent.I
   name,
   mode,
   permission,
+  model: { providerID: "test-provider" as any, modelID: "test-model" as any },
   options: {},
 })
 
@@ -31,6 +34,7 @@ const sessionInfo = (id: SessionID, permission: Session.Info["permission"]): Ses
     directory: "/tmp/swarm-test",
     title: "swarm test",
     version: "test",
+    model: { providerID: "test-provider" as any, id: "test-model" as any },
     time: { created: Date.now(), updated: Date.now() },
     permission,
     cost: 0,
@@ -63,8 +67,10 @@ const use = (effect: any, file: string, run?: () => Effect.Effect<void>) => {
     wait: () => Effect.void,
     track: (_id, work) => work,
   } as unknown as SessionDrain.Interface)
+  const config = Layer.succeed(Config.Service, { get: () => Effect.succeed({ subagent_depth: 3, subagent_model: undefined, subagent_variant: undefined, subagent_variant_overrides: {}, mcp: {} }) } as unknown as Config.Interface)
+  const provider = Layer.succeed(Provider.Service, {} as unknown as Provider.Interface)
   const execution = SessionExecution.noopLayer
-  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, prompt, drain, execution, sessions))(Effect.scoped(effect)))
+  return Effect.runPromise(Effect.provide(Layer.mergeAll(db, ev, prompt, drain, config, provider, execution, sessions))(Effect.scoped(effect)))
 }
 
 describe("SwarmRuntime planned worker path (M3)", () => {
