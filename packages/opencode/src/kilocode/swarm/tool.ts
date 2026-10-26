@@ -135,7 +135,14 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           corrId: `${base}_review_commit_${reviewEntry.index}`,
           report,
           executedCommands,
-        }).pipe(Effect.catchCause((cause) => Effect.succeed({ verdict: "inconclusive" as const, accepted: false, blockingFindings: [Cause.pretty(cause)], evidence: [], checks: [] })))
+        }).pipe(Effect.catchCause((cause) => Effect.succeed({
+          verdict: "inconclusive" as const,
+          accepted: false,
+          summary: "Review could not be durably recorded.",
+          blockingFindings: [Cause.pretty(cause)],
+          evidence: [],
+          checks: [],
+        })))
 
         let acceptanceFailure: string | undefined
         if (recorded.accepted) {
