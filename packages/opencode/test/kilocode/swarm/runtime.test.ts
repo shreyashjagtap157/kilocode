@@ -26,7 +26,7 @@ const agent = (name: string, permission: Agent.Info["permission"], mode: Agent.I
   options: {},
 })
 
-const sessionInfo = (id: SessionID, permission: Session.Info["permission"]): Session.Info =>
+const sessionInfo = (id: SessionID, permission: Session.Info["permission"], model = { providerID: "test-provider" as any, id: "test-model" as any }): Session.Info =>
   ({
     id,
     slug: "swarm-test",
@@ -34,20 +34,21 @@ const sessionInfo = (id: SessionID, permission: Session.Info["permission"]): Ses
     directory: "/tmp/swarm-test",
     title: "swarm test",
     version: "test",
-    model: { providerID: "test-provider" as any, id: "test-model" as any },
+    model,
     time: { created: Date.now(), updated: Date.now() },
     permission,
     cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }) as Session.Info
 
-const use = (effect: any, file: string, run?: () => Effect.Effect<void>) => {
+const use = (effect: any, file: string, run?: () => Effect.Effect<void>, onCreate?: (input: unknown) => void) => {
   const db = Database.layerFromPath(file)
   const ev = EventV2.layerWith().pipe(Layer.provide(db))
   let childNumber = 0
   const sessions = Layer.succeed(Session.Service, {
     get: () => Effect.succeed(sessionInfo(parentID, Permission.fromConfig({ bash: "deny" }))),
-    create: () => {
+    create: (input: unknown) => {
+      onCreate?.(input)
       childNumber += 1
       return Effect.succeed(sessionInfo(SessionID.make(`ses_swarm_child_${childNumber}`), Permission.fromConfig({ bash: "deny" })))
     },
@@ -74,8 +75,9 @@ const use = (effect: any, file: string, run?: () => Effect.Effect<void>) => {
 }
 
 describe("SwarmRuntime planned worker path (M3)", () => {
-  test("creates a child-session request and executes it through durable swarm admission", async () => {
+  test("creates a child session with the resolved worker model and executes it through durable swarm admission", async () => {
     await using tmp = await tmpdir()
+    let created: any
     await use(
       Effect.gen(function* () {
         const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
@@ -97,6 +99,7 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         expect(result.taskId).toMatch(/^tsk_/)
         expect(result.durationMs).toBeGreaterThanOrEqual(0)
         expect(result.agent).toBe("worker")
+        expect(created?.model).toEqual({ modelID: "test-model", providerID: "test-provider", variant: undefined })
         const { db } = yield* Database.Service
         const task = yield* db
           .get<{ state: string; parent_id: string | null }>(sql`SELECT state, parent_id FROM kilo_swarm_task WHERE swarm_id = ${swarmId}`)
@@ -105,6 +108,8 @@ describe("SwarmRuntime planned worker path (M3)", () => {
         expect(task?.parent_id).toBe(parentID)
       }),
       (tmp as any).path + "/swarm.db",
+      undefined,
+      (input) => { created = input },
     )
   })
 
