@@ -191,12 +191,17 @@ export namespace SwarmVerification {
     /^npx\s+(?:vitest|jest|playwright|tsc|eslint|prettier)\b/i,
   ] as const
 
-  /** Match known validation invocations, not arbitrary shell text mentioning "test". */
-  export const isValidationCommand = (command: string) =>
-    shellSegments(command).some((segment) => {
-      const trimmed = segment.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+/i, "")
-      return validationCommand.some((pattern) => pattern.test(trimmed))
-    })
+  /**
+   * Match one known validation invocation only. Compound commands are rejected:
+   * true || bun test and bun test; echo done must not be treated as proof that
+   * a test runner's exit code is the overall command's exit code.
+   */
+  export const isValidationCommand = (command: string) => {
+    const segments = shellSegments(command)
+    if (segments.length !== 1) return false
+    const trimmed = segments[0]!.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+/i, "")
+    return validationCommand.some((pattern) => pattern.test(trimmed))
+  }
 
   /**
    * Validate reviewer evidence against completed, persisted SessionV1 tool parts.
