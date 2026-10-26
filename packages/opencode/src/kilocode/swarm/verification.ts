@@ -208,13 +208,12 @@ export namespace SwarmVerification {
           args?.command === execution.command &&
           normalizeCommand(String(args.command)) === normalizeCommand(execution.command) &&
           typeof metadata?.exit === "number" &&
-          metadata.exit === 0 &&
-          execution.exitCode === 0 &&
+          metadata.exit === execution.exitCode &&
           typeof output === "string" &&
           createHash("sha256").update(output).digest("hex") === execution.outputSha256
 
         if (!matched) {
-          problems.push(`execution ${execution.callId} has no matching persisted completed shell part with exit 0 and the same output hash`)
+          problems.push(`execution ${execution.callId} has no matching persisted completed shell part with the same exit code and output hash`)
         }
       }
       return [...new Set(problems)]
