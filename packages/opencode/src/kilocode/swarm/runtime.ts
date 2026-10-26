@@ -18,6 +18,7 @@ import { SwarmWorker } from "./worker"
 import { DynamicAgentFactory } from "./factory"
 
 export namespace SwarmRuntime {
+  export const MAX_WORKERS = 12
   export class InvalidInput extends Schema.TaggedErrorClass<InvalidInput>()("SwarmRuntime.InvalidInput", { message: Schema.String }) {}
   export type Input = { taskId: string; ownerId: string; sessionId: string; actor: string; corrId: string; leaseMs?: number; renewalIntervalMs?: number }
 
@@ -80,16 +81,18 @@ export namespace SwarmRuntime {
 
   export const runPlannedBatch = Effect.fn("SwarmRuntime.runPlannedBatch")(function* (input: { workers: readonly PlannedInput[]; concurrency?: number }) {
     if (input.workers.length === 0) return []
+    if (input.workers.length > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `worker count cannot exceed ${MAX_WORKERS}` }))
     const concurrency = input.concurrency ?? input.workers.length
-    if (!Number.isSafeInteger(concurrency) || concurrency < 1) return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `batch concurrency must be between 1 and ${MAX_WORKERS}` }))
     return yield* Effect.all(input.workers.map((worker) => runPlanned(worker)), { concurrency })
   })
 
   /** Run all workers independently, preserving successful workers when another worker fails. */
   export const runPlannedBatchSettled = Effect.fn("SwarmRuntime.runPlannedBatchSettled")(function* (input: { workers: readonly PlannedInput[]; concurrency?: number }) {
     if (input.workers.length === 0) return { completed: [], failed: [] as Array<{ index: number; error: unknown }> }
+    if (input.workers.length > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `worker count cannot exceed ${MAX_WORKERS}` }))
     const concurrency = input.concurrency ?? input.workers.length
-    if (!Number.isSafeInteger(concurrency) || concurrency < 1) return yield* Effect.fail(new InvalidInput({ message: "batch concurrency must be a positive safe integer" }))
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `batch concurrency must be between 1 and ${MAX_WORKERS}` }))
     const outcomes = yield* Effect.forEach(input.workers, (worker) => Effect.either(runPlanned(worker)), { concurrency })
     const completed: Array<{ index: number; result: PlannedResult }> = []
     const failed: Array<{ index: number; error: unknown }> = []
