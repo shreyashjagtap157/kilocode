@@ -579,8 +579,8 @@ describe("swarm state (M2)", () => {
         expect(task.state).toBe("queued")
         expect(task.cancel_requested).toBe(1)
         const { db } = yield* Database.Service
-        const historyCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = \${taskId}\`)
-        const eventCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = \${taskId} AND type LIKE 'swarm.task.transitioned%'\`)
+        const historyCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = ${taskId}`)
+        const eventCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.transitioned%'`)
         expect(historyCount?.count).toBe(0)
         expect(eventCount?.count).toBe(0)
       }),
@@ -621,7 +621,7 @@ describe("swarm state (M2)", () => {
         // Inject the cancellation marker inside EventV2's immediate transaction,
         // after the preflight snapshot but before the transition CAS.
         yield* events.project(SwarmTaskTransitioned, () =>
-          db.run(sql\`UPDATE kilo_swarm_task SET cancel_requested = 1 WHERE id = \${taskId}\`).pipe(Effect.asVoid, Effect.orDie),
+          db.run(sql`UPDATE kilo_swarm_task SET cancel_requested = 1 WHERE id = ${taskId}`).pipe(Effect.asVoid, Effect.orDie),
         )
         const attempt = yield* Effect.exit(SwarmState.transition({
           taskId, to: "reserved", expectedVersion: 0, actor: "act_test", corrId: "cor_race" as any,
@@ -631,8 +631,8 @@ describe("swarm state (M2)", () => {
         const task = yield* SwarmState.getTask(taskId)
         expect(task.state).toBe("queued")
         expect(task.cancel_requested).toBe(0)
-        const historyCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = \${taskId}\`)
-        const eventCount = yield* db.get<{ count: number }>(sql\`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = \${taskId} AND type LIKE 'swarm.task.transitioned%'\`)
+        const historyCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task_transition WHERE task_id = ${taskId}`)
+        const eventCount = yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.transitioned%'`)
         expect(historyCount?.count).toBe(0)
         expect(eventCount?.count).toBe(0)
       }),
