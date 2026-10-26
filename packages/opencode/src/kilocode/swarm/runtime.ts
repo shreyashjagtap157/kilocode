@@ -55,7 +55,16 @@ export namespace SwarmRuntime {
     const taskId = yield* SwarmState.createTask({ swarmId: input.swarmId, parentId: parent.id, actor: input.actor, corrId: input.corrId })
 
     const execute = Effect.gen(function* () {
-      const child = yield* sessions.create({ parentID: parent.id, title: plan.title, agent: plan.agent, permission: plan.permission })
+      // Persist the resolved worker model on the child session. The prompt also receives
+      // the same resolved model below, but the session itself must remain self-describing
+      // for recovery, inspection, cancellation, and subsequent session resumption.
+      const child = yield* sessions.create({
+        parentID: parent.id,
+        title: plan.title,
+        agent: plan.agent,
+        model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID, variant: resolved.variant },
+        permission: plan.permission,
+      })
       yield* drain.link(child.id, parent.id)
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
