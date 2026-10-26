@@ -219,7 +219,7 @@ export namespace SwarmState {
   const assertAcceptance = (db: DB, taskId: string) =>
     Effect.gen(function* () {
       const review = yield* db
-        .get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type = 'swarm.task.review_passed'`)
+        .get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'`)
         .pipe(Effect.orDie)
       if (!review || review.count < 1) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has no durable passing independent review` }))
