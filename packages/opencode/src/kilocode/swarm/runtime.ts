@@ -6,6 +6,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID, MessageID } from "@/session/schema"
 import { SessionDrain } from "@/kilocode/session/drain"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
 import type { Agent } from "@/agent/agent"
 import type { Config } from "@/config/config"
 import { SwarmDispatcher } from "./dispatcher"
@@ -32,6 +33,26 @@ export namespace SwarmRuntime {
     const admission = yield* SwarmDispatcher.admit({ taskId: input.taskId, ownerId: input.ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
     yield* SwarmWorker.resumeSession({ taskId: admission.taskId, sessionId: input.sessionId, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs })
     return { taskId: admission.taskId, sessionId: input.sessionId }
+  })
+
+  /**
+   * Cancel a swarm task and, when a worker session is already bound, interrupt
+   * the actual Kilo execution. Durable cancellation is committed before the
+   * interrupt so a racing worker immediately loses renewal/completion authority.
+   */
+  export const cancel = Effect.fn("SwarmRuntime.cancel")(function* (input: { taskId: string; actor: string; corrId: string; idemKey?: string }) {
+    const task = yield* SwarmState.getTask(input.taskId)
+    if (task.state === "cancelled") return { taskId: input.taskId, sessionId: undefined, alreadyTerminal: false }
+    const result = yield* SwarmState.requestCancel(input)
+    const binding = yield* SwarmWorker.getBinding(input.taskId)
+    if (binding && binding.state === "bound") {
+      const execution = yield* SessionExecution.Service
+      yield* execution.interrupt(binding.session_id as SessionID)
+    }
+    const current = yield* SwarmState.getTask(input.taskId)
+    if (!current.cancel_requested || current.state === "cancelled") return { taskId: input.taskId, sessionId: binding?.session_id, alreadyTerminal: result.alreadyTerminal }
+    yield* SwarmState.transition({ taskId: input.taskId, to: "cancelled", expectedVersion: current.version, actor: input.actor, corrId: input.corrId })
+    return { taskId: input.taskId, sessionId: binding?.session_id, alreadyTerminal: false }
   })
 
   export type PlannedInput = {
@@ -82,8 +103,6 @@ export namespace SwarmRuntime {
           tools: { question: false, ...(plan.canTodo ? {} : { todowrite: false }), ...(plan.canTask ? {} : { task: false }) },
           parts: [{ type: "text", text: input.prompt }],
         })
-        // SessionPrompt.prompt queues the child turn; SessionDrain.wait is the
-        // authoritative signal that the actual provider/tool execution is done.
         yield* drain.wait(child.id)
       }).pipe(Effect.asVoid)
       yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, work })
