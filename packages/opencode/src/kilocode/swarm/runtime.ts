@@ -38,9 +38,10 @@ export namespace SwarmRuntime {
     swarmId: string; parentSessionId: SessionID; description: string; prompt: string; caller: Agent.Info; subagent: Agent.Info; actor: string; corrId: string
     mcp?: ConfigType.Info["mcp"]; depth?: number; maxDepth?: number; leaseMs?: number; renewalIntervalMs?: number; ownerId?: string
   }
-  export type PlannedResult = { taskId: string; sessionId: string; agent: string }
+  export type PlannedResult = { taskId: string; sessionId: string; agent: string; durationMs: number }
 
   export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
+    const startedAt = Date.now()
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
     const drain = yield* SessionDrain.Service
@@ -63,7 +64,7 @@ export namespace SwarmRuntime {
         yield* drain.wait(child.id)
       }).pipe(Effect.asVoid)
       yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, work })
-      return { taskId, sessionId: child.id, agent: plan.agent }
+      return { taskId, sessionId: child.id, agent: plan.agent, durationMs: Math.max(0, Date.now() - startedAt) }
     })
     return yield* execute.pipe(Effect.catchAll((error) => SwarmState.requestCancel({ taskId, actor: input.actor, corrId: input.corrId }).pipe(Effect.ignore, Effect.andThen(Effect.fail(error)))))
   })
