@@ -19,6 +19,41 @@ name: validate-cli-smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.kilocodemodes'
+      - 'bun.lock'
+      - 'package.json'
+      - 'packages/core/**'
+      - 'packages/opencode/package.json'
+      - 'packages/opencode/bin/**'
+      - 'packages/opencode/script/**'
+      - 'packages/opencode/src/**'
+      - 'packages/opencode/test/kilocode/swarm/**'
+      - 'packages/kilo-console/**'
+      - 'packages/kilo-indexing/**'
+      - 'packages/kilo-memory/**'
+      - 'packages/kilo-gateway/**'
+      - '.github/actions/setup-bun/**'
+      - '.github/workflows/validate-cli-smoke.yml'
+  pull_request:
+    paths:
+      - '.kilocodemodes'
+      - 'bun.lock'
+      - 'package.json'
+      - 'packages/core/**'
+      - 'packages/opencode/package.json'
+      - 'packages/opencode/bin/**'
+      - 'packages/opencode/script/**'
+      - 'packages/opencode/src/**'
+      - 'packages/opencode/test/kilocode/swarm/**'
+      - 'packages/kilo-console/**'
+      - 'packages/kilo-indexing/**'
+      - 'packages/kilo-memory/**'
+      - 'packages/kilo-gateway/**'
+      - '.github/actions/setup-bun/**'
+      - '.github/workflows/validate-cli-smoke.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
