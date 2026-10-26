@@ -969,7 +969,7 @@ describe("swarm state (M2)", () => {
     )
   })
 
-  test("review cannot be recorded against a session that is not bound to the reviewer task", async () => {
+  test("review rejects mismatched sessions, expired bindings, and stale fences", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
     await use(
@@ -991,24 +991,34 @@ describe("swarm state (M2)", () => {
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_bound_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
-
-        const attempt = yield* Effect.exit(SwarmVerification.recordReview({
-          taskId,
-          reviewerTaskId,
-          reviewerSessionId: "ses_forged_reviewer",
-          reviewerAgent: "reviewer",
-          corrId: "cor_binding_review" as any,
-          executedCommands: [],
-          report: {
-            verdict: "pass",
-            summary: "Structured review with execution evidence.",
-            checks: [{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }],
-            evidence: [{ id: "e1", kind: "test", reference: "bun test", detail: "Command completed successfully.", result: "pass", exitCode: 0 }],
-            blockingFindings: [],
-            uncertainties: [],
-          },
+        const report = {
+          verdict: "pass",
+          summary: "Structured review with execution evidence.",
+          checks: [{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+          evidence: [{ id: "e1", kind: "test", reference: "bun test test/kilocode/swarm/state.test.ts", detail: "Command completed successfully.", result: "pass", exitCode: 0 }],
+          blockingFindings: [],
+          uncertainties: [],
+        }
+        const forgedSession = yield* Effect.exit(SwarmVerification.recordReview({
+          taskId, reviewerTaskId, reviewerSessionId: "ses_forged_reviewer", reviewerAgent: "reviewer",
+          corrId: "cor_binding_review" as any, executedCommands: [], report,
         }))
-        expect(attempt._tag).toBe("Failure")
+        expect(forgedSession._tag).toBe("Failure")
+
+        yield* db.run(sql`UPDATE kilo_swarm_worker_binding SET state = 'expired' WHERE task_id = ${reviewerTaskId}`).pipe(Effect.orDie)
+        const expiredBinding = yield* Effect.exit(SwarmVerification.recordReview({
+          taskId, reviewerTaskId, reviewerSessionId: "ses_bound_reviewer", reviewerAgent: "reviewer",
+          corrId: "cor_expired_binding_review" as any, executedCommands: [], report,
+        }))
+        expect(expiredBinding._tag).toBe("Failure")
+
+        yield* db.run(sql`UPDATE kilo_swarm_worker_binding SET state = 'bound', fence = 99 WHERE task_id = ${reviewerTaskId}`).pipe(Effect.orDie)
+        const staleFence = yield* Effect.exit(SwarmVerification.recordReview({
+          taskId, reviewerTaskId, reviewerSessionId: "ses_bound_reviewer", reviewerAgent: "reviewer",
+          corrId: "cor_stale_fence_review" as any, executedCommands: [], report,
+        }))
+        expect(staleFence._tag).toBe("Failure")
+
         const reviewEvents = yield* db.get<{ count: number }>(sql`
           SELECT COUNT(*) AS count FROM event WHERE aggregate_id = ${taskId} AND type LIKE 'swarm.task.review_passed%'
         `)
@@ -1017,7 +1027,6 @@ describe("swarm state (M2)", () => {
       file,
     )
   })
-
 
   test("acceptance gate rejects a directly published review event without executable provenance", async () => {
     await using tmp = await tmpdir()
