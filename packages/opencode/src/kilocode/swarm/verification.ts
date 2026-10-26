@@ -124,6 +124,89 @@ export namespace SwarmVerification {
   // Re-run the exact same structural/evidence checks against the durable event
   // payload at the authoritative state-transition boundary. This prevents code
   // from bypassing recordReview and publishing a bare "review_passed" event.
+
+  /**
+   * Confirm reviewer-provided execution references against Kilo's persisted
+   * SessionEvent.Tool transcript. A model-authored JSON field is not proof that
+   * a shell command actually ran.
+   */
+  export const hostExecutionProblems = (
+    db: Database.Interface["db"],
+    input: { executionEvidenceJson: unknown; reviewerSessionId: string },
+  ) =>
+    Effect.gen(function* () {
+      let executions: VerifiedExecution[]
+      try {
+        const value = typeof input.executionEvidenceJson === "string"
+          ? JSON.parse(input.executionEvidenceJson)
+          : input.executionEvidenceJson
+        executions = Schema.decodeUnknownSync(Schema.Array(VerifiedExecutionSchema))(value)
+      } catch {
+        return ["host execution evidence failed schema validation"]
+      }
+      if (executions.length === 0) return ["review contains no host-recorded validation execution"]
+
+      const rows = yield* db
+        .all<{ type: string; data: Record<string, unknown> | string }>(sql`
+          SELECT type, data FROM event
+          WHERE aggregate_id = ${input.reviewerSessionId}
+            AND (
+              type LIKE 'session.next.tool.called%'
+              OR type LIKE 'session.next.tool.success%'
+              OR type LIKE 'session.next.tool.failed%'
+            )
+        `)
+        .pipe(Effect.orDie)
+
+      const record = (value: unknown): Record<string, unknown> | undefined => {
+        try {
+          const parsed = typeof value === "string" ? JSON.parse(value) : value
+          return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : undefined
+        } catch {
+          return undefined
+        }
+      }
+      const calls = rows
+        .filter((row) => row.type.startsWith("session.next.tool.called"))
+        .map((row) => ({ type: row.type, data: record(row.data) }))
+      const successes = rows
+        .filter((row) => row.type.startsWith("session.next.tool.success"))
+        .map((row) => ({ type: row.type, data: record(row.data) }))
+      const failures = rows
+        .filter((row) => row.type.startsWith("session.next.tool.failed"))
+        .map((row) => ({ type: row.type, data: record(row.data) }))
+      const problems: string[] = []
+      for (const execution of executions) {
+        if (execution.sourceSessionId !== input.reviewerSessionId) {
+          problems.push(`execution ${execution.callId} belongs to another session`)
+          continue
+        }
+        const call = calls.find(({ data }) => {
+          if (!data || data.callID !== execution.callId || data.assistantMessageID !== execution.messageId || data.tool !== "bash") return false
+          const args = record(data.input)
+          return typeof args?.command === "string" && normalizeCommand(args.command) === normalizeCommand(execution.command)
+        })
+        if (!call) {
+          problems.push(`execution ${execution.callId} has no matching persisted shell-tool call`)
+          continue
+        }
+        const failed = failures.some(({ data }) =>
+          data?.callID === execution.callId && data.assistantMessageID === execution.messageId,
+        )
+        const success = successes.some(({ data }) =>
+          data?.callID === execution.callId &&
+          data.assistantMessageID === execution.messageId &&
+          record(data.structured)?.exit === 0,
+        )
+        if (!success || failed || execution.exitCode !== 0) {
+          problems.push(`execution ${execution.callId} has no persisted successful tool result with exit code 0`)
+        }
+      }
+      return [...new Set(problems)]
+    })
+
   export const qualificationProblems = (input: {
     summary: unknown
     evidenceJson: unknown
