@@ -113,10 +113,24 @@ export function readOnlyPermissions(input: {
   ceiling: Permission.Ruleset
 }): Permission.Rule[] {
   // The session stores overrides, not the complete effective agent policy.
-  // Emit a shell allow only when the selected agent and inherited ceiling already
-  // allow that command; do not let a reviewer role widen provider/user permissions.
-  const allowedShellCommands = readOnlyShellCommands.filter(
-    (pattern) => Permission.evaluate("bash", pattern, input.agentPermission, input.ceiling).action === "allow",
+  // Preserve the original agent/session policy and only allow commands already
+  // allowed there. Reject broad command patterns that overlap a narrower deny/ask
+  // rule, since appending "cat *: allow" would otherwise override "cat secrets/**: deny".
+  const original = [...input.agentPermission, ...input.ceiling]
+  const overlapsRestrictedPattern = (candidate: string, restricted: string) => {
+    if (restricted === "*") return false
+    const candidatePrefix = candidate.split("*", 1)[0]!
+    const restrictedPrefix = restricted.split("*", 1)[0]!
+    return candidatePrefix.startsWith(restrictedPrefix) || restrictedPrefix.startsWith(candidatePrefix)
+  }
+  const allowedShellCommands = readOnlyShellCommands.filter((pattern) =>
+    Permission.evaluate("bash", pattern, input.agentPermission, input.ceiling).action === "allow" &&
+    !original.some((rule) =>
+      rule.action !== "allow" &&
+      rule.pattern !== "*" &&
+      (rule.permission === "bash" || rule.permission === "*") &&
+      overlapsRestrictedPattern(pattern, rule.pattern),
+    ),
   )
   return KiloTask.merge(
     input.ceiling,
