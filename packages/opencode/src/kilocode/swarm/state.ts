@@ -252,11 +252,13 @@ export namespace SwarmState {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has malformed or non-independent review provenance` }))
       }
 
+      const reviewerTaskId = data.reviewerTaskId as string
+      const reviewerSessionId = data.reviewerSessionId as string
       const reviewer = yield* db
-        .get<{ id: string; swarm_id: string; state: string }>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${data.reviewerTaskId}`)
+        .get<{ id: string; swarm_id: string; state: string }>(sql`SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${reviewerTaskId}`)
         .pipe(Effect.orDie)
       const binding = yield* db
-        .get<{ session_id: string; swarm_id: string }>(sql`SELECT session_id, swarm_id FROM kilo_swarm_worker_binding WHERE task_id = ${data.reviewerTaskId}`)
+        .get<{ session_id: string; swarm_id: string }>(sql`SELECT session_id, swarm_id FROM kilo_swarm_worker_binding WHERE task_id = ${reviewerTaskId}`)
         .pipe(Effect.orDie)
       if (
         !reviewer ||
@@ -264,7 +266,7 @@ export namespace SwarmState {
         !["reviewing", "accepted", "integrated"].includes(reviewer.state) ||
         !binding ||
         binding.swarm_id !== swarmId ||
-        binding.session_id !== data.reviewerSessionId
+        binding.session_id !== reviewerSessionId
       ) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review was not produced by a currently bound independent reviewer` }))
       }
@@ -276,7 +278,7 @@ export namespace SwarmState {
         blockingFindingsJson: data.blockingFindingsJson,
         uncertaintiesJson: data.uncertaintiesJson,
         executionEvidenceJson: data.executionEvidenceJson,
-        reviewerSessionId: data.reviewerSessionId,
+        reviewerSessionId,
       })
       if (evidenceProblems.length > 0) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review evidence is invalid: ${evidenceProblems[0]}` }))
@@ -287,7 +289,7 @@ export namespace SwarmState {
       // A syntactically plausible forged command record cannot qualify a task.
       const hostProblems = yield* SwarmVerification.hostExecutionProblems(db, {
         executionEvidenceJson: data.executionEvidenceJson,
-        reviewerSessionId: data.reviewerSessionId,
+        reviewerSessionId,
       }).pipe(Effect.orDie)
       if (hostProblems.length > 0) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} host execution verification failed: ${hostProblems[0]}` }))
