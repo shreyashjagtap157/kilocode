@@ -13,3 +13,5 @@ customModes:
       - browser
       - mcp
       - swarm
+      - board_read
+      - board_post
