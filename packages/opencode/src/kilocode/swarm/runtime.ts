@@ -6,10 +6,10 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID, MessageID } from "@/session/schema"
 import { SessionDrain } from "@/kilocode/session/drain"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { KiloTask } from "@/kilocode/tool/task"
+import { SwarmCancellation } from "./cancellation"
 import type { Agent } from "@/agent/agent"
 import type { Config as ConfigType } from "@/config/config"
 import { SwarmDispatcher } from "./dispatcher"
@@ -19,7 +19,6 @@ import { DynamicAgentFactory } from "./factory"
 
 export namespace SwarmRuntime {
   export class InvalidInput extends Schema.TaggedErrorClass<InvalidInput>()("SwarmRuntime.InvalidInput", { message: Schema.String }) {}
-
   export type Input = { taskId: string; ownerId: string; sessionId: string; actor: string; corrId: string; leaseMs?: number; renewalIntervalMs?: number }
 
   export const runSession = Effect.fn("SwarmRuntime.runSession")(function* (input: Input) {
@@ -30,20 +29,9 @@ export namespace SwarmRuntime {
     return { taskId: admission.taskId, sessionId: input.sessionId }
   })
 
-  /** Cancel a swarm task and interrupt its actual Kilo execution when one is bound. */
+  /** Single authoritative cancellation entry point for swarm workers. */
   export const cancel = Effect.fn("SwarmRuntime.cancel")(function* (input: { taskId: string; actor: string; corrId: string; idemKey?: string }) {
-    const task = yield* SwarmState.getTask(input.taskId)
-    if (["accepted", "rejected", "integrated", "failed", "cancelled", "stale", "quarantined"].includes(task.state)) return { taskId: input.taskId, sessionId: undefined, alreadyTerminal: true }
-    const result = yield* SwarmState.requestCancel(input)
-    const binding = yield* SwarmWorker.getBinding(input.taskId)
-    if (binding && binding.state === "bound") {
-      const execution = yield* SessionExecution.Service
-      yield* execution.interrupt(binding.session_id as SessionID)
-    }
-    const current = yield* SwarmState.getTask(input.taskId)
-    if (!current.cancel_requested || current.state === "cancelled") return { taskId: input.taskId, sessionId: binding?.session_id, alreadyTerminal: result.alreadyTerminal }
-    yield* SwarmState.transition({ taskId: input.taskId, to: "cancelled", expectedVersion: current.version, actor: input.actor, corrId: input.corrId })
-    return { taskId: input.taskId, sessionId: binding?.session_id, alreadyTerminal: false }
+    return yield* SwarmCancellation.request(input)
   })
 
   export type PlannedInput = {
