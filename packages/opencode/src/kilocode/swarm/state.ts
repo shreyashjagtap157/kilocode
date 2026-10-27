@@ -266,6 +266,16 @@ export namespace SwarmState {
 
       const reviewerTaskId = data.reviewerTaskId as string
       const reviewerSessionId = data.reviewerSessionId as string
+      const reviewerUse = yield* db
+        .get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event
+          WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+            AND json_extract(data, '$.reviewerTaskId') = ${reviewerTaskId}
+        `)
+        .pipe(Effect.orDie)
+      if (!reviewerUse || reviewerUse.count !== 1) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `reviewer task ${reviewerTaskId} must be used for exactly one durable review` }))
+      }
       const reviewer = yield* db
         .get<{ id: string; swarm_id: string; state: string; fence: number }>(sql`SELECT id, swarm_id, state, fence FROM kilo_swarm_task WHERE id = ${reviewerTaskId}`)
         .pipe(Effect.orDie)
@@ -317,6 +327,17 @@ export namespace SwarmState {
    */
   const assertReviewCompletion = (db: DB, taskId: string, swarmId: string) =>
     Effect.gen(function* () {
+      const reviewCount = yield* db.get<{ count: number }>(sql`
+        SELECT COUNT(*) AS count
+        FROM event
+        WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+          AND json_extract(data, '$.reviewerTaskId') = ${taskId}
+          AND json_extract(data, '$.swarmId') = ${swarmId}
+      `).pipe(Effect.orDie)
+      if (!reviewCount || reviewCount.count !== 1) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} must have exactly one durable review result` }))
+      }
+
       const row = yield* db.get<{ aggregate_id: string; type: string; data: Record<string, unknown> | string }>(sql`
         SELECT aggregate_id, type, data
         FROM event
