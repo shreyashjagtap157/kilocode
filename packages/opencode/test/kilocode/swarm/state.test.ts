@@ -1495,14 +1495,14 @@ describe("swarm state (M2)", () => {
         const reviewer = yield* SwarmState.getTask(reviewerTaskId)
         expect(reviewer.state).toBe("reviewed")
 
-        // Recovery may expire a completed reviewer's lease binding after restart.
-        // The durable review event and exact session/fence provenance must still
-        // qualify the target; the expired binding must never be executable again.
-        yield* db.run(sql`
-          UPDATE kilo_swarm_worker_binding
-          SET state = 'expired', time_updated = ${Date.now()}
-          WHERE task_id = ${reviewerTaskId}
+        // Simulate startup recovery after the reviewer completed and released
+        // its lease. Recovery expires the execution binding, but the durable review
+        // event and matching session/fence remain valid audit provenance.
+        yield* SwarmRecovery.reconcile()
+        const recoveredBinding = yield* db.get<{ state: string }>(sql`
+          SELECT state FROM kilo_swarm_worker_binding WHERE task_id = ${reviewerTaskId}
         `).pipe(Effect.orDie)
+        expect(recoveredBinding?.state).toBe("expired")
 
         const accepted = yield* SwarmState.transition({
           taskId,
