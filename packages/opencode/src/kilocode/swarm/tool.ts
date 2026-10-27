@@ -217,7 +217,8 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           `Independent peer review: ${review.accepted ? "PASS" : "BLOCKED"}`,
           `Worker role: ${target.role}`,
           `Worker task: ${target.taskId}`,
-          `Reviewer task: ${review.reviewerTaskId}`,
+          `Reviewer task: ${review.reviewerTaskId} (${String(review.reviewerTaskState ?? "unknown state")})`,
+          ...(review.reviewerTaskStateFailure ? [`Reviewer lifecycle warning: ${String(review.reviewerTaskStateFailure).slice(0, 300)}`] : []),
           `Summary: ${String(review.summary ?? "No structured review summary was recorded.").slice(0, 500)}`,
           ...(checks.length ? ["Checks:", ...checks.slice(0, 5).map((check) => `- ${String(check.verdict ?? "unknown")}: ${String(check.criterion ?? "unnamed criterion").slice(0, 180)} [${(check.evidenceIds ?? []).slice(0, 4).join(", ")}]`)] : []),
           ...(evidence.length ? ["Evidence:", ...evidence.slice(0, 4).map((item) => `- ${String(item.id ?? "evidence")}: ${String(item.kind ?? "artifact")} ${String(item.result ?? "observed")} ${String(item.reference ?? "").slice(0, 200)}${item.exitCode === undefined ? "" : ` (exit ${item.exitCode})`}`)] : []),
@@ -237,6 +238,30 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         )
         return { taskId: target.taskId, posted }
       }), { concurrency: "unbounded" })
+      const reviewerFailureAnnouncements = yield* Effect.forEach(reviewBatch.failed, (entry) => Effect.gen(function* () {
+        const target = entries[entry.index]
+        if (!target) return { workerTaskId: undefined, reviewerTaskId: undefined, posted: false }
+        const body = [
+          "Independent peer review: UNAVAILABLE",
+          `Worker role: ${target.role}`,
+          `Worker task: ${target.taskId}`,
+          "No passing review was recorded. The worker must remain unaccepted until an independent review succeeds.",
+          `Reviewer execution error: ${errorText(entry.error).slice(0, 1400)}`,
+          "This board note is advisory; the durable acceptance gate remains authoritative.",
+        ].join("\n").slice(0, 3900)
+        const posted = yield* BoardStore.post({
+          sessionID: parent.id as SessionID,
+          messageID: ctx.messageID,
+          callID: `${base}_review_unavailable_${target.taskId}`,
+          to: target.sessionId,
+          type: "HOLD",
+          body,
+        }).pipe(
+          Effect.as(true),
+          Effect.catchCause(() => Effect.succeed(false)),
+        )
+        return { workerTaskId: target.taskId, reviewerTaskId: undefined, posted }
+      }), { concurrency: "unbounded" })
       const board = yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 100 })
       const communications = board.messages.filter((message) => message.from !== "main").map((message) => ({ from: message.fromLabel ?? message.from, to: message.toLabel ?? message.to, type: message.type, body: message.body, id: message.id }))
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
@@ -254,14 +279,14 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       return {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
-          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
+          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
           ...entries.flatMap((entry, index) => { const review = reviews.find((item) => item.workerTaskId === entry.taskId); return [`\n## ${index + 1}. ${entry.role}`, entry.finding, `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`, ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.join("; ")}`] : []), `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`] }),
           ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
           ...reviewerFailures.flatMap((entry) => [`\n## REVIEW FAILED: ${entry.role} (target: ${entry.targetRole})`, entry.error]),
           ...reviewerStateFailures.flatMap((entry) => [`\n## REVIEW TASK LIFECYCLE FAILED: ${entry.reviewerTaskId} (target: ${entry.workerTaskId})`, String(entry.error)]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, reviewerFailureAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications },
       }
     }),
   }),
