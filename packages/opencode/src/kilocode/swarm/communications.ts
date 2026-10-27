@@ -51,6 +51,7 @@ export function collect<E, R>(
     let hasMore = true
     let truncated = false
     let pages = 0
+    const seenCursors = new Set<string>()
     const collected: Message[] = []
     while (hasMore && pages < maxPages) {
       const page = yield* readPage(cursor)
@@ -58,10 +59,11 @@ export function collect<E, R>(
       pages += 1
       hasMore = page.hasMore
       if (!hasMore) break
-      if (!page.cursor || page.cursor === cursor) {
+      if (!page.cursor || page.cursor === cursor || seenCursors.has(page.cursor)) {
         truncated = true
         break
       }
+      seenCursors.add(page.cursor)
       cursor = page.cursor
     }
 
