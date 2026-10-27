@@ -282,6 +282,54 @@ describe("SwarmRuntime planned worker path (M3)", () => {
     )
   })
 
+
+  test("settled batches preserve successful workers when a sibling defects", async () => {
+    await using tmp = await tmpdir()
+    const file = (tmp as any).path + "/swarm.db"
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 2 })
+        const caller = agent("main", Permission.fromConfig({ read: "allow" }), "primary")
+        const worker = agent("worker", Permission.fromConfig({ read: "allow" }))
+        const workers = [
+          {
+            swarmId,
+            parentSessionId: parentID,
+            description: "valid worker",
+            prompt: "Return a short result.",
+            caller,
+            subagent: worker,
+            actor: "act_settled_valid",
+            corrId: "cor_settled_valid" as any,
+          },
+          {
+            swarmId,
+            parentSessionId: parentID,
+            description: "defective worker",
+            prompt: "This plan should defect before execution.",
+            caller,
+            subagent: undefined as unknown as Agent.Info,
+            actor: "act_settled_defect",
+            corrId: "cor_settled_defect" as any,
+          },
+        ]
+
+        const result = yield* SwarmRuntime.runPlannedBatchSettled({ workers, concurrency: 2 })
+        expect(result.completed).toHaveLength(1)
+        expect(result.completed[0]?.index).toBe(0)
+        expect(result.completed[0]?.result.agent).toBe("worker")
+        expect(result.failed).toHaveLength(1)
+        expect(result.failed[0]?.index).toBe(1)
+        expect(String(result.failed[0]?.error)).toMatch(/undefined|name/i)
+
+        const tasks = yield* SwarmState.listTasks(swarmId)
+        expect(tasks).toHaveLength(1)
+        expect(tasks[0]?.state).toBe("reviewing")
+      }),
+      file,
+    )
+  })
+
   test("read-only reviewer session enforces its permission ceiling", async () => {
     await using tmp = await tmpdir()
     let created: any
