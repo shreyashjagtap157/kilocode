@@ -466,7 +466,7 @@ export namespace SwarmVerification {
       checks: decoded.report.checks,
       // Only call records that match persisted SessionV1 tool parts survive as
       // verified evidence. Keep rejected candidates separate for honest reporting.
-      executionEvidence: failures.filter((problem) => executionProblems.includes(problem)).length === 0 ? executions : [],
+      executionEvidence: executionProblems.length === 0 ? executions : [],
       executionEvidenceProblems: executionProblems,
     }
   })
