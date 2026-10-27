@@ -296,7 +296,7 @@ export namespace SwarmState {
         binding.swarm_id !== swarmId ||
         binding.session_id !== reviewerSessionId
       ) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review was not produced by a currently bound independent reviewer` }))
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review has invalid independent reviewer provenance` }))
       }
 
       const evidenceProblems = SwarmVerification.qualificationProblems({
