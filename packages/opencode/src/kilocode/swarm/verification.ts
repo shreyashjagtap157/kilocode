@@ -200,16 +200,23 @@ export namespace SwarmVerification {
     /^npx\s+(?:vitest|jest|playwright|tsc|eslint|prettier)\b/i,
   ] as const
 
+  const isKnownValidationInvocation = (value: string) => {
+    const trimmed = value.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+/i, "")
+    return validationCommand.some((pattern) => pattern.test(trimmed))
+  }
+
   /**
-   * Match one known validation invocation only. Compound commands are rejected:
-   * true || bun test and bun test; echo done must not be treated as proof that
-   * a test runner's exit code is the overall command's exit code.
+   * Match one known validation invocation. Permit only the safe common prefix
+   * cd <directory> && <validator>; the test's exit code remains the shell result
+   * because the validator runs only if the directory change succeeded. Arbitrary
+   * pipelines, fallbacks, and post-validation commands remain disallowed.
    */
   export const isValidationCommand = (command: string) => {
     const segments = shellSegments(command)
-    if (segments.length !== 1) return false
-    const trimmed = segments[0]!.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+/i, "")
-    return validationCommand.some((pattern) => pattern.test(trimmed))
+    if (segments.length === 1) return isKnownValidationInvocation(segments[0]!)
+    if (segments.length !== 2) return false
+    const changeDirectory = /^cd\s+(?:"[^"]+"|'[^']+'|[^\s;&|]+)$/i
+    return changeDirectory.test(segments[0]!.trim()) && isKnownValidationInvocation(segments[1]!)
   }
 
   /**
