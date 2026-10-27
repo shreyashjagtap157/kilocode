@@ -148,23 +148,6 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           }
         })))
 
-        let acceptanceFailure: string | undefined
-        if (recorded.accepted) {
-          const task = yield* SwarmState.getTask(target.taskId)
-          const outcome = yield* Effect.exit(SwarmState.transition({
-            taskId: target.taskId,
-            to: "accepted",
-            expectedVersion: task.version,
-            actor: ctx.agent,
-            corrId: `${base}_accept_${reviewEntry.index}`,
-          }))
-          if (outcome._tag === "Failure") {
-            acceptanceFailure = Cause.pretty(outcome.cause)
-          } else {
-            const committed = yield* SwarmState.getTask(target.taskId)
-            if (committed.state !== "accepted") acceptanceFailure = `acceptance transition returned but task state is ${committed.state}`
-          }
-        }
         // A review task is an execution artifact, not an implementation deliverable.
         // Close it as reviewed only when its event was persisted; failed persistence
         // must leave a truthful failed terminal state rather than a stuck reviewing row.
@@ -194,6 +177,23 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           reviewerTaskStateFailure = `reviewer task was ${reviewerTask.state}, expected reviewing before completion`
         }
 
+        let acceptanceFailure: string | undefined
+        if (recorded.accepted) {
+          const task = yield* SwarmState.getTask(target.taskId)
+          const outcome = yield* Effect.exit(SwarmState.transition({
+            taskId: target.taskId,
+            to: "accepted",
+            expectedVersion: task.version,
+            actor: ctx.agent,
+            corrId: `${base}_accept_${reviewEntry.index}`,
+          }))
+          if (outcome._tag === "Failure") {
+            acceptanceFailure = Cause.pretty(outcome.cause)
+          } else {
+            const committed = yield* SwarmState.getTask(target.taskId)
+            if (committed.state !== "accepted") acceptanceFailure = `acceptance transition returned but task state is ${committed.state}`
+          }
+        }
         return {
           workerTaskId: target.taskId,
           reviewerTaskId: reviewEntry.result.taskId,
