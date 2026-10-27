@@ -275,7 +275,7 @@ export namespace SwarmState {
       if (
         !reviewer ||
         reviewer.swarm_id !== swarmId ||
-        !["reviewing", "accepted", "integrated"].includes(reviewer.state) ||
+        !["reviewing", "reviewed", "accepted", "integrated"].includes(reviewer.state) ||
         !binding ||
         binding.state !== "bound" ||
         binding.fence !== reviewer.fence ||
@@ -307,6 +307,71 @@ export namespace SwarmState {
       }).pipe(Effect.orDie)
       if (hostProblems.length > 0) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} host execution verification failed: ${hostProblems[0]}` }))
+      }
+    })
+
+  /**
+   * A review task is complete only after it has durably produced a review event
+   * from its own current bound session. This closes the reviewer lifecycle without
+   * treating the review task as accepted implementation work.
+   */
+  const assertReviewCompletion = (db: DB, taskId: string, swarmId: string) =>
+    Effect.gen(function* () {
+      const row = yield* db.get<{ aggregate_id: string; type: string; data: Record<string, unknown> | string }>(sql`
+        SELECT aggregate_id, type, data
+        FROM event
+        WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+          AND json_extract(data, '$.reviewerTaskId') = ${taskId}
+          AND json_extract(data, '$.swarmId') = ${swarmId}
+        LIMIT 1
+      `).pipe(Effect.orDie)
+      if (!row || row.aggregate_id === taskId) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} has no durable review result for another task` }))
+      }
+
+      let data: Record<string, unknown> | undefined
+      try {
+        const parsed = typeof row.data === "string" ? JSON.parse(row.data) : row.data
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) data = parsed as Record<string, unknown>
+      } catch {
+        data = undefined
+      }
+      if (
+        !data ||
+        data.reviewerTaskId !== taskId ||
+        data.swarmId !== swarmId ||
+        typeof data.reviewerSessionId !== "string" ||
+        !data.reviewerSessionId
+      ) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} has malformed review provenance` }))
+      }
+
+      const reviewer = yield* db
+        .get<{ id: string; swarm_id: string; state: string; fence: number }>(sql`
+          SELECT id, swarm_id, state, fence FROM kilo_swarm_task WHERE id = ${taskId}
+        `).pipe(Effect.orDie)
+      const target = yield* db
+        .get<{ id: string; swarm_id: string }>(sql`
+          SELECT id, swarm_id FROM kilo_swarm_task WHERE id = ${row.aggregate_id}
+        `).pipe(Effect.orDie)
+      const binding = yield* db
+        .get<{ session_id: string; swarm_id: string; fence: number; state: string }>(sql`
+          SELECT session_id, swarm_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${taskId}
+        `).pipe(Effect.orDie)
+      if (
+        !reviewer ||
+        reviewer.state !== "reviewing" ||
+        reviewer.swarm_id !== swarmId ||
+        !target ||
+        target.id === reviewer.id ||
+        target.swarm_id !== swarmId ||
+        !binding ||
+        binding.state !== "bound" ||
+        binding.fence !== reviewer.fence ||
+        binding.swarm_id !== swarmId ||
+        binding.session_id !== data.reviewerSessionId
+      ) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} no longer has a valid durable reviewer binding` }))
       }
     })
 
@@ -351,6 +416,7 @@ export namespace SwarmState {
       return yield* Effect.fail(new CancelConflict({ message: `task ${input.taskId} has a cancellation request and may only transition to cancelled` }))
     }
     if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id)
+    if (input.to === "reviewed") yield* assertReviewCompletion(db, input.taskId, task.swarm_id)
 
     const now = Date.now()
     const nextVersion = task.version + 1
@@ -399,6 +465,7 @@ export namespace SwarmState {
                 return yield* Effect.die(new IllegalTransition({ message: `illegal transition ${current.state} -> ${input.to}` }))
               }
               if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id).pipe(Effect.orDie)
+              if (input.to === "reviewed") yield* assertReviewCompletion(db, input.taskId, task.swarm_id).pipe(Effect.orDie)
               const updated = yield* db.get<{ id: string }>(sql`
                 UPDATE kilo_swarm_task
                 SET state = ${input.to}, version = ${nextVersion}, time_updated = ${now}
