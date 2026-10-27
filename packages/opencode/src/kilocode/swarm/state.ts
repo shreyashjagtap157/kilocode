@@ -287,7 +287,11 @@ export namespace SwarmState {
         reviewer.swarm_id !== swarmId ||
         reviewer.state !== "reviewed" ||
         !binding ||
-        binding.state !== "bound" ||
+        // A live binding is required to create the review event, but recovery
+        // may expire it after the reviewer task is terminally reviewed. At this
+        // point it is audit provenance only; the task fence/session/event and
+        // host tool transcript must still match exactly.
+        (binding.state !== "bound" && binding.state !== "expired") ||
         binding.fence !== reviewer.fence ||
         binding.swarm_id !== swarmId ||
         binding.session_id !== reviewerSessionId
