@@ -28,6 +28,8 @@ When fewer than two workers complete, Swarm does not let the sole survivor revie
 
 The final tool result exposes the review evidence instead of returning only a PASS/FAIL label: it lists checked criteria, linked evidence IDs and references, reviewer findings, and the host-recorded validation command's exit status and persisted part/message/call identifiers. A short output digest is shown for readability; complete structured execution proof remains in result metadata and the durable review event. Any execution candidates that failed host verification are reported separately as rejected, never presented as verified evidence.
 
+The evidence gate distinguishes execution authority from audit provenance: a review event can only be recorded while the reviewer task/session binding is live and matches its fence. Once the review task reaches terminal `reviewed`, startup recovery may expire that binding for execution purposes; acceptance can still use it as historical provenance only when the reviewer task, session, fence, unique review event, and persisted tool transcript all match. An expired binding is never reactivated for execution.
+
 ## Installation and legacy compatibility
 
 The native mode is registered in `packages/opencode/src/kilocode/agent/index.ts`. It inherits the normal code-agent permission rules and adds explicit permission for the `swarm` tool and, when the shared board is enabled, `board_read` and `board_post`. Explicit user permission rules are applied afterward, so the user can still deny these tools.
