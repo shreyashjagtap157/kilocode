@@ -82,6 +82,9 @@ export const TaskState = Schema.Literals([
   "blocked",
   "awaiting_approval",
   "reviewing",
+  // Terminal status for a reviewer task whose durable review event was recorded.
+  // It is deliberately distinct from accepted/integrated implementation work.
+  "reviewed",
   "accepted",
   "rejected",
   "integrated",
@@ -104,7 +107,8 @@ export const Lifecycle: Readonly<Record<TaskState, ReadonlyArray<TaskState>>> = 
   running: ["blocked", "awaiting_approval", "reviewing", "failed", "cancelled", "stale"],
   blocked: ["running", "cancelled", "stale"],
   awaiting_approval: ["running", "cancelled"],
-  reviewing: ["accepted", "rejected", "failed"],
+  reviewing: ["accepted", "rejected", "failed", "reviewed"],
+  reviewed: [],
   accepted: ["integrated"],
   rejected: ["queued", "cancelled"],
   integrated: [],
@@ -115,7 +119,7 @@ export const Lifecycle: Readonly<Record<TaskState, ReadonlyArray<TaskState>>> = 
 }
 
 /** States with no outgoing transitions. */
-export const TerminalStates: ReadonlyArray<TaskState> = ["integrated", "failed", "cancelled", "quarantined"]
+export const TerminalStates: ReadonlyArray<TaskState> = ["integrated", "reviewed", "failed", "cancelled", "quarantined"]
 
 /** Reservation lifecycle values. Declarative only; no reconciliation runs here. */
 export const BudgetState = Schema.Literals(["reserved", "reconciled", "released"])
