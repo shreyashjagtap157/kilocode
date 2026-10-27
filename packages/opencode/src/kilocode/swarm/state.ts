@@ -275,7 +275,7 @@ export namespace SwarmState {
       if (
         !reviewer ||
         reviewer.swarm_id !== swarmId ||
-        !["reviewing", "reviewed", "accepted", "integrated"].includes(reviewer.state) ||
+        reviewer.state !== "reviewed" ||
         !binding ||
         binding.state !== "bound" ||
         binding.fence !== reviewer.fence ||
