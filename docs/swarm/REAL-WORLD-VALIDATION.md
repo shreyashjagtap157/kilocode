@@ -24,9 +24,10 @@ A real configured provider/model run must demonstrate all of the following:
 10. Restart/recovery does not create duplicate authoritative execution.
 11. Worker permissions never exceed the derived Kilo permission ceiling.
 12. Each worker result eligible for acceptance is reviewed by a separate reviewer task/session; self-review is never substituted when too few workers finish.
-13. Passing criteria link to evidence, and a claimed passing command matches a completed persisted Kilo shell-tool part in that reviewer session, including command, exit code, and output digest.
+13. Passing criteria link to evidence, and a claimed passing command reference exactly matches a completed persisted Kilo shell-tool part in that reviewer session, including command, exit code, part/message/call identity, and output digest.
 14. A later blocked review overrides an earlier pass, and a parent task remains unaccepted while any direct child is not accepted/integrated.
-15. Reviewer failures, missing reviewers, mismatched sessions, failed commands, or forged evidence remain visible as unaccepted outcomes.
+15. Reviewer failures, missing reviewers, mismatched sessions, failed commands, or forged evidence remain visible as unaccepted outcomes; a lone surviving worker receives an explicit HOLD notice when no independent reviewer can be scheduled.
+16. A reviewer task transitions to terminal `reviewed` only after its pass/fail/inconclusive event is durably recorded; failed review persistence is not silently treated as completion, and `reviewed` never means the implementation was accepted.
 
 ## Usefulness benchmark
 
