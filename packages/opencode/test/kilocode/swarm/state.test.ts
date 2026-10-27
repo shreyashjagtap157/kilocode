@@ -782,6 +782,17 @@ describe("swarm state (M2)", () => {
         expect(result.version).toBe(workerVersion + 1)
         const task = yield* SwarmState.getTask(taskId)
         expect(task.state).toBe("accepted")
+
+        const reviewerCompletion = yield* SwarmState.transition({
+          taskId: reviewerTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerVersion,
+          actor: "act_test",
+          corrId: "cor_review_task_complete" as any,
+        })
+        expect(reviewerCompletion.version).toBe(reviewerVersion + 1)
+        const reviewer = yield* SwarmState.getTask(reviewerTaskId)
+        expect(reviewer.state).toBe("reviewed")
       }),
       file,
     )
@@ -1253,6 +1264,31 @@ describe("swarm state (M2)", () => {
         const child = yield* SwarmState.getTask(childTaskId)
         expect(parent.state).toBe("reviewing")
         expect(child.state).toBe("queued")
+      }),
+      file,
+    )
+  })
+
+
+  test("reviewer cannot transition to reviewed without a durable review event", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_review_terminal" as any })
+        let version = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: version, actor: "act_test", corrId: "cor_review_terminal" as any })
+          version += 1
+        }
+        const attempt = yield* Effect.exit(SwarmState.transition({
+          taskId, to: "reviewed", expectedVersion: version, actor: "act_test", corrId: "cor_review_terminal_no_event" as any,
+        }))
+        expect(attempt._tag).toBe("Failure")
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("reviewing")
+        expect(task.version).toBe(version)
       }),
       file,
     )
