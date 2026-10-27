@@ -26,6 +26,8 @@ The reviewer must return structured criteria and link evidence to each passing c
 
 When fewer than two workers complete, Swarm does not let the sole survivor review itself; the result remains unaccepted and the tool reports that independent review was unavailable. These source-level safeguards are implemented, but they must not be described as fully qualified until the focused swarm tests and typecheck run successfully in CI and real provider execution validates the stored transcript shape.
 
+The final tool result exposes the review evidence instead of returning only a PASS/FAIL label: it lists checked criteria, linked evidence IDs and references, reviewer findings, and the host-recorded validation command's exit status and persisted part/message/call identifiers. A short output digest is shown for readability; complete structured execution proof remains in result metadata and the durable review event. Any execution candidates that failed host verification are reported separately as rejected, never presented as verified evidence.
+
 ## Installation and legacy compatibility
 
 The native mode is registered in `packages/opencode/src/kilocode/agent/index.ts`. It inherits the normal code-agent permission rules and adds explicit permission for the `swarm` tool and, when the shared board is enabled, `board_read` and `board_post`. Explicit user permission rules are applied afterward, so the user can still deny these tools.
