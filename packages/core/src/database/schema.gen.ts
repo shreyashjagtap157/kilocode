@@ -147,6 +147,7 @@ export default {
           \`state\` text NOT NULL,
           \`version\` integer DEFAULT 0 NOT NULL,
           \`max_workers\` integer DEFAULT 4 NOT NULL,
+          \`required_reviews\` integer DEFAULT 1 NOT NULL,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL
         );
