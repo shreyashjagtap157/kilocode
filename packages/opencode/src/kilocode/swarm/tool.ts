@@ -127,6 +127,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         const reviewTranscript = reviewMessages[reportIndex] ?? []
         const report = parseReview(finding(reviewTranscript))
         const executedCommands = verifiedExecutions(reviewTranscript, reviewEntry.result.sessionId)
+        let reviewDurablyRecorded = true
         const recorded = yield* SwarmVerification.recordReview({
           taskId: target.taskId,
           reviewerTaskId: reviewEntry.result.taskId,
@@ -135,13 +136,16 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           corrId: `${base}_review_commit_${reviewEntry.index}`,
           report,
           executedCommands,
-        }).pipe(Effect.catchCause((cause) => Effect.succeed({
-          verdict: "inconclusive" as const,
-          accepted: false,
-          summary: "Review could not be durably recorded.",
-          blockingFindings: [Cause.pretty(cause)],
-          evidence: [],
-          checks: [],
+        }).pipe(Effect.catchCause((cause) => Effect.sync(() => {
+          reviewDurablyRecorded = false
+          return {
+            verdict: "inconclusive" as const,
+            accepted: false,
+            summary: "Review could not be durably recorded.",
+            blockingFindings: [Cause.pretty(cause)],
+            evidence: [],
+            checks: [],
+          }
         })))
 
         let acceptanceFailure: string | undefined
@@ -161,9 +165,40 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
             if (committed.state !== "accepted") acceptanceFailure = `acceptance transition returned but task state is ${committed.state}`
           }
         }
+        // A review task is an execution artifact, not an implementation deliverable.
+        // Close it as reviewed only when its event was persisted; failed persistence
+        // must leave a truthful failed terminal state rather than a stuck reviewing row.
+        let reviewerTaskState: string | undefined
+        let reviewerTaskStateFailure: string | undefined
+        const reviewerTask = yield* SwarmState.getTask(reviewEntry.result.taskId)
+        if (reviewerTask.state === "reviewing") {
+          const nextReviewerState = reviewDurablyRecorded ? "reviewed" : "failed"
+          const completion = yield* Effect.exit(SwarmState.transition({
+            taskId: reviewerTask.id,
+            to: nextReviewerState,
+            expectedVersion: reviewerTask.version,
+            actor: ctx.agent,
+            corrId: `${base}_review_task_${reviewEntry.index}`,
+          }))
+          if (completion._tag === "Failure") {
+            reviewerTaskStateFailure = Cause.pretty(completion.cause)
+          } else {
+            const committedReviewer = yield* SwarmState.getTask(reviewerTask.id)
+            reviewerTaskState = committedReviewer.state
+            if (committedReviewer.state !== nextReviewerState) {
+              reviewerTaskStateFailure = `reviewer task state is ${committedReviewer.state}; expected ${nextReviewerState}`
+            }
+          }
+        } else {
+          reviewerTaskState = reviewerTask.state
+          reviewerTaskStateFailure = `reviewer task was ${reviewerTask.state}, expected reviewing before completion`
+        }
+
         return {
           workerTaskId: target.taskId,
           reviewerTaskId: reviewEntry.result.taskId,
+          reviewerTaskState,
+          reviewerTaskStateFailure,
           ...recorded,
           accepted: recorded.accepted && !acceptanceFailure,
           blockingFindings: [...recorded.blockingFindings, ...(acceptanceFailure ? [acceptanceFailure] : [])],
@@ -210,17 +245,23 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         targetRole: entries[entry.index]?.role ?? "unknown worker",
         error: errorText(entry.error),
       }))
+      const reviewerStateFailures = reviews.filter((review) => review.reviewerTaskStateFailure).map((review) => ({
+        workerTaskId: review.workerTaskId,
+        reviewerTaskId: review.reviewerTaskId,
+        error: review.reviewerTaskStateFailure,
+      }))
       const accepted = reviews.filter((review) => review.accepted).length
       return {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
-          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
+          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
           ...entries.flatMap((entry, index) => { const review = reviews.find((item) => item.workerTaskId === entry.taskId); return [`\n## ${index + 1}. ${entry.role}`, entry.finding, `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`, ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.join("; ")}`] : []), `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`] }),
           ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
           ...reviewerFailures.flatMap((entry) => [`\n## REVIEW FAILED: ${entry.role} (target: ${entry.targetRole})`, entry.error]),
+          ...reviewerStateFailures.flatMap((entry) => [`\n## REVIEW TASK LIFECYCLE FAILED: ${entry.reviewerTaskId} (target: ${entry.workerTaskId})`, String(entry.error)]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, workers: entries, reviews, failures, reviewerFailures, communications },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications },
       }
     }),
   }),
