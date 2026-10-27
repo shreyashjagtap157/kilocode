@@ -262,9 +262,27 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
                handoff === "No assistant finding was persisted." ||
                handoff === "No textual assistant finding was persisted."
              ) {
+               const durableTask = yield* SwarmState.getTask(result.taskId)
+               let closureFailure: string | undefined
+               if (durableTask.state === "reviewing") {
+                 const closure = yield* Effect.exit(SwarmState.transition({
+                   taskId: durableTask.id,
+                   to: "failed",
+                   expectedVersion: durableTask.version,
+                   actor: ctx.agent,
+                   corrId: `${base}_${index}_missing_handoff` as any,
+                 }))
+                 if (closure._tag === "Failure") {
+                   if (Cause.hasInterrupts(closure.cause)) return yield* Effect.interrupt
+                   closureFailure = Cause.pretty(closure.cause)
+                 }
+               }
                stagedFailed.push({
                  index,
-                 error: new Error("The stage completed without a usable textual handoff; dependent tasks were not executed."),
+                 error: new Error(
+                   "The stage completed without a usable textual handoff; dependent tasks were not executed." +
+                   (closureFailure ? " Durable task closure also failed: " + closureFailure : ""),
+                 ),
                })
                blockedBy = task.id
              } else {
