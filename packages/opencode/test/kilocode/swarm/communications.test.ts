@@ -70,6 +70,26 @@ describe("SwarmCommunications.collect", () => {
     expect(result.truncated).toBe(true)
   })
 
+  test("stops safely when cursors cycle across earlier pages", async () => {
+    const cursors = ["cursor-a", "cursor-b", "cursor-a"]
+    const calls: Array<string | undefined> = []
+    const result = await Effect.runPromise(
+      SwarmCommunications.collect((cursor) => {
+        calls.push(cursor)
+        const next = cursors[calls.length - 1]!
+        return Effect.succeed({
+          messages: [message("cycle-" + calls.length)],
+          cursor: next,
+          hasMore: true,
+        })
+      }),
+    )
+
+    expect(calls).toEqual([undefined, "cursor-a", "cursor-b"])
+    expect(result.scanned).toBe(3)
+    expect(result.truncated).toBe(true)
+  })
+
   test("caps scanning when the board keeps growing", async () => {
     let calls = 0
     const result = await Effect.runPromise(
