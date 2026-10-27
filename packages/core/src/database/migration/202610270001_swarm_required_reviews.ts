@@ -8,8 +8,8 @@ export default {
       // Existing invocations keep the original one-review contract unless
       // they explicitly opt into a stronger persisted qualification policy.
       yield* tx.run(`
-        ALTER TABLE `kilo_swarm`
-        ADD COLUMN `required_reviews` integer DEFAULT 1 NOT NULL
+        ALTER TABLE kilo_swarm
+        ADD COLUMN required_reviews integer DEFAULT 1 NOT NULL
       `)
     })
   },
