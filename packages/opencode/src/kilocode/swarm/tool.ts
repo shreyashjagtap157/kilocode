@@ -201,90 +201,90 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         }
       }
       const workerLimit = args.maxWorkers ?? defaultTeamPlan?.execution.maxWorkers ?? workers.length
-       const requiredReviews = defaultTeamPlan?.verification.independentReviewsPerTask ?? 1
-       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: workerLimit, requiredReviews })
+      const requiredReviews = defaultTeamPlan?.verification.independentReviewsPerTask ?? 1
+      const swarmId = yield* SwarmState.createSwarm({ maxWorkers: workerLimit, requiredReviews })
       const planned = workers.map((worker, index) => ({
         swarmId, parentSessionId: parent.id, description: worker.role,
         prompt: [`Shared objective: ${args.objective}`, `Role: ${worker.role}`, `Task: ${worker.prompt}`, "", "TEAM COORDINATION PROTOCOL:", "Inspect the shared agent board before substantive work when available.", "Post concise discoveries, blockers, questions, and verified findings so peers can build on your work.", "If another worker has already solved part of your task, build on that evidence instead of duplicating it. If you disagree, post the contradiction and supporting evidence.", "Before finishing, post your strongest evidence-backed result and every remaining uncertainty to the shared board when board_post is available; always return a final handoff in your task result."].join("\n"),
         caller, subagent: resolved[index], actor: ctx.agent, corrId: `${base}_${index}` as any,
         boardEnabled,
-         ...(defaultTeamPlan?.tasks[index]?.readOnly ? { readOnly: true } : {}),
+        ...(defaultTeamPlan?.tasks[index]?.readOnly ? { readOnly: true } : {}),
       }))
       
-       let batch: {
-         completed: Array<{ index: number; result: SwarmRuntime.PlannedResult }>
-         failed: Array<{ index: number; error: unknown }>
-       }
-       if (defaultTeamPlan) {
-         const stagedCompleted: Array<{ index: number; result: SwarmRuntime.PlannedResult }> = []
-         const stagedFailed: Array<{ index: number; error: unknown }> = []
-         const stageFindings = new Map<string, string>()
-         let blockedBy: string | undefined
-         for (const [index, task] of defaultTeamPlan.tasks.entries()) {
-           if (blockedBy) {
-             stagedFailed.push({
-               index,
-               error: new Error("Blocked because prerequisite task " + blockedBy + " failed; dependent work was not executed."),
-             })
-             continue
-           }
-           const missingDependency = task.dependsOn.find((dependency) => !stageFindings.has(dependency))
-           if (missingDependency) {
-             stagedFailed.push({
-               index,
-               error: new Error("Blocked because prerequisite task " + missingDependency + " has no completed handoff."),
-             })
-             blockedBy = missingDependency
-             continue
-           }
-           const dependencyContext = task.dependsOn
-             .map((dependency) => "Prerequisite " + dependency + " output:\n" + (stageFindings.get(dependency) ?? "No handoff was persisted."))
-             .join("\n\n")
-           const stageBatch = yield* SwarmRuntime.runPlannedBatchSettled({
-             workers: [{
-               ...planned[index]!,
-               prompt: [
-                 planned[index]!.prompt,
-                 "STAGED EXECUTION: respect the declared task dependencies; do not act as though a prerequisite succeeded unless its handoff appears below.",
-                 "Current stage: " + task.id + " — " + task.title,
-                 "Prerequisites: " + (task.dependsOn.join(", ") || "none"),
-                 dependencyContext ? "PREREQUISITE HANDOFFS:\n" + dependencyContext : "No prerequisite handoff is required for this stage.",
-               ].join("\n\n"),
-             }],
-             concurrency: 1,
-           })
-           if (stageBatch.completed[0]) {
-             const result = stageBatch.completed[0].result
-             const transcript = yield* MessageV2.stream(result.sessionId as SessionID)
-             const handoff = finding(transcript).trim()
-             if (
-               !handoff ||
-               handoff === "No assistant finding was persisted." ||
-               handoff === "No textual assistant finding was persisted."
-             ) {
-               const durableTask = yield* SwarmState.getTask(result.taskId)
-               let closureFailure: string | undefined
-               if (durableTask.state === "reviewing") {
-                 const closure = yield* Effect.exit(SwarmState.transition({
-                   taskId: durableTask.id,
-                   to: "failed",
-                   expectedVersion: durableTask.version,
-                   actor: ctx.agent,
-                   corrId: `${base}_${index}_missing_handoff` as any,
-                 }))
-                 if (closure._tag === "Failure") {
-                   if (Cause.hasInterrupts(closure.cause)) return yield* Effect.interrupt
-                   closureFailure = Cause.pretty(closure.cause)
-                 }
-               }
-               stagedFailed.push({
-                 index,
-                 error: new Error(
-                   "The stage completed without a usable textual handoff; dependent tasks were not executed." +
-                   (closureFailure ? " Durable task closure also failed: " + closureFailure : ""),
-                 ),
-               })
-               blockedBy = task.id
+      let batch: {
+        completed: Array<{ index: number; result: SwarmRuntime.PlannedResult }>
+        failed: Array<{ index: number; error: unknown }>
+      }
+      if (defaultTeamPlan) {
+        const stagedCompleted: Array<{ index: number; result: SwarmRuntime.PlannedResult }> = []
+        const stagedFailed: Array<{ index: number; error: unknown }> = []
+        const stageFindings = new Map<string, string>()
+        let blockedBy: string | undefined
+        for (const [index, task] of defaultTeamPlan.tasks.entries()) {
+          if (blockedBy) {
+            stagedFailed.push({
+              index,
+              error: new Error("Blocked because prerequisite task " + blockedBy + " failed; dependent work was not executed."),
+            })
+            continue
+          }
+          const missingDependency = task.dependsOn.find((dependency) => !stageFindings.has(dependency))
+          if (missingDependency) {
+            stagedFailed.push({
+              index,
+              error: new Error("Blocked because prerequisite task " + missingDependency + " has no completed handoff."),
+            })
+            blockedBy = missingDependency
+            continue
+          }
+          const dependencyContext = task.dependsOn
+            .map((dependency) => "Prerequisite " + dependency + " output:\n" + (stageFindings.get(dependency) ?? "No handoff was persisted."))
+            .join("\n\n")
+          const stageBatch = yield* SwarmRuntime.runPlannedBatchSettled({
+            workers: [{
+              ...planned[index]!,
+              prompt: [
+                planned[index]!.prompt,
+                "STAGED EXECUTION: respect the declared task dependencies; do not act as though a prerequisite succeeded unless its handoff appears below.",
+                "Current stage: " + task.id + " — " + task.title,
+                "Prerequisites: " + (task.dependsOn.join(", ") || "none"),
+                dependencyContext ? "PREREQUISITE HANDOFFS:\n" + dependencyContext : "No prerequisite handoff is required for this stage.",
+              ].join("\n\n"),
+            }],
+            concurrency: 1,
+          })
+          if (stageBatch.completed[0]) {
+            const result = stageBatch.completed[0].result
+            const transcript = yield* MessageV2.stream(result.sessionId as SessionID)
+            const handoff = finding(transcript).trim()
+            if (
+              !handoff ||
+              handoff === "No assistant finding was persisted." ||
+              handoff === "No textual assistant finding was persisted."
+            ) {
+              const durableTask = yield* SwarmState.getTask(result.taskId)
+              let closureFailure: string | undefined
+              if (durableTask.state === "reviewing") {
+                const closure = yield* Effect.exit(SwarmState.transition({
+                  taskId: durableTask.id,
+                  to: "failed",
+                  expectedVersion: durableTask.version,
+                  actor: ctx.agent,
+                  corrId: `${base}_${index}_missing_handoff` as any,
+                }))
+                if (closure._tag === "Failure") {
+                  if (Cause.hasInterrupts(closure.cause)) return yield* Effect.interrupt
+                  closureFailure = Cause.pretty(closure.cause)
+                }
+              }
+              stagedFailed.push({
+                index,
+                error: new Error(
+                  "The stage completed without a usable textual handoff; dependent tasks were not executed." +
+                  (closureFailure ? " Durable task closure also failed: " + closureFailure : ""),
+                ),
+              })
+              blockedBy = task.id
              } else {
                stagedCompleted.push({ index, result })
                stageFindings.set(task.id, handoff.slice(0, 6000))
