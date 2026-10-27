@@ -160,6 +160,9 @@ describe("DynamicAgentFactory", () => {
     // Git's output redirection flags bypass shell-operator suffix checks; deny
     // the write-capable Git flags explicitly as part of the reviewer ceiling.
     expect(Permission.evaluate("bash", "git diff --output=/tmp/review.diff", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git diff -o/tmp/review.diff", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git show --output /tmp/review.txt HEAD", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git log -o/tmp/review.log", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "git show -o /tmp/review.txt HEAD", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "git log --output=/tmp/review.log", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "git grep --open-files-in-pager='touch /tmp/x' needle", original, policy).action).toBe("deny")
