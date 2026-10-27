@@ -107,7 +107,14 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
       if (boardEnabled) {
         yield* BoardStore.scope(parent.id as SessionID)
-        yield* BoardStore.post({ sessionID: parent.id as SessionID, messageID: ${base}_objective`, callID: base, to: "ALL", type: "INFO", body: `SWARM OBJECTIVE: ${args.objective}` + `\nWorkers: ${args.workers.map((worker) => ${worker.role} (${worker.agent})`).join(", ")}` + `\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.` })
+        yield* BoardStore.post({
+          sessionID: parent.id as SessionID,
+          messageID: `${base}_objective`,
+          callID: base,
+          to: "ALL",
+          type: "INFO",
+          body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.`,
+        })
       }
       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
       const planned = args.workers.map((worker, index) => ({
