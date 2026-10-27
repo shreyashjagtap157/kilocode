@@ -200,7 +200,7 @@ describe("DynamicAgentFactory", () => {
     expect(plan.tasks.map((task) => task.role)).toEqual(["architect", "implementer", "tester", "reviewer"])
     expect(plan.tasks.map((task) => task.dependsOn)).toEqual([[], ["tsk_1"], ["tsk_2"], ["tsk_3"]])
     expect(plan.execution).toEqual({ strategy: "sequential", concurrency: 1, maxWorkers: 4 })
-    expect(plan.verification).toEqual({ independentReviewsPerTask: 1, requireCommandEvidence: true })
+    expect(plan.verification).toEqual({ independentReviewsPerTask: 2, requireCommandEvidence: true })
     expect(plan.tasks[0]?.readOnly).toBe(true)
     expect(plan.tasks[1]?.readOnly).toBe(false)
     expect(plan.tasks[2]?.readOnly).toBe(false)
