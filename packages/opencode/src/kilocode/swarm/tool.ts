@@ -17,8 +17,8 @@ import { DynamicAgentFactory } from "./factory"
 
 const Worker = Schema.Struct({ agent: Schema.String, role: Schema.String, prompt: Schema.String })
 const Parameters = Schema.Struct({
-  workers: Schema.Array(Worker),
-  maxWorkers: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1), Schema.lessThanOrEqualTo(12))),
+  workers: Schema.optional(Schema.Array(Worker)),
+  maxWorkers: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(12))),
   objective: Schema.String,
 })
 
@@ -81,16 +81,71 @@ function verifiedExecutions(
   return executions
 }
 
-export const SwarmTool: Tool.Info<typeof Parameters> = {
+export const SwarmTool = Effect.succeed({
   id: "swarm",
   init: () => Effect.succeed({
     description: "Run multiple configured Kilo specialist agents concurrently as a durable team swarm. Workers share Kilo's persistent session board, communicate with peers, then independently cross-review each other's completed work with structured evidence before a worker can be marked accepted.",
     parameters: Parameters,
     execute: (args, ctx) => Effect.gen(function* () {
-      if (args.workers.length === 0) return yield* Effect.fail(new Error("swarm requires at least one worker"))
+      const workersProvided = args.workers !== undefined && args.workers.length > 0
+      if (!workersProvided) {
+        // No explicit workers: generate a default team plan from the objective
+        if (!args.objective) return yield* Effect.fail(new Error("swarm requires either workers or objective"))
+
+        // Generate default team plan from objective
+        const planInfo = yield* DynamicAgentFactory.generateDefaultTeamPlanFromObjective(args.objective)
+
+        // Create worker sessions from the generated plan
+        const resolved: Map<number, Agent.Info> = new Map()
+
+        // Create one worker per specialist role in the plan
+        for (let i = 0; i < planInfo.specializeRoles.length; i++) {
+          const role = planInfo.specialistRoles[i]
+          // Create a subagent for this role
+          const subagent = yield* DynamicAgentFactory.plan({ parentID: parent.id, description: role, caller, session: parent })
+          resolved.set(i, subagent)
+        }
+
+        // Build planned inputs from the generated plan
+        const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
+        const planned = Array.from(resolved.entries()).map(([index, subagent], idx) => ({
+          swarmId: "",
+          parentSessionId: parent.id,
+          description: planInfo.tasks[idx]?.title ?? `Worker ${idx}`,
+          prompt: [
+            `Shared objective: ${args.objective}`,
+            `Role: ${planInfo.specializeRoles[idx]}`,
+            `Task: ${planInfo.tasks[idx]?.title ?? "unknown"}`,
+            "",
+            "TEAM COORDINATION PROTOCOL:",
+            "Inspect the shared agent board before substantive work when available.",
+            "Post concise discoveries, blockers, questions, and verified findings so peers can build on your work.",
+            "If another worker has already solved part of your task, build on that evidence instead of duplicating it.",
+            "If you disagree, post the contradiction and supporting evidence.",
+            "Before finishing, post your strongest evidence-backed result and every remaining uncertainty to the shared board when board_post is available; always return a final handoff in your task result.",
+          ].join("\n"),
+          caller, subagent: resolved.get(idx)!, actor: ctx.agent, corrId: `${base}_${idx}` as any,
+          boardEnabled: true,
+        }))
+
+        // Create swarm and run the planned batch
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: planInfo.resourceLimits.maxWorkers })
+
+        // Update swarmId in each planned input
+        const plannedWithSwarmId = planned.map(p => ({
+          ...p,
+          swarmId,
+        }))
+
+        const batch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: plannedWithSwarmId, concurrency: planInfo.resourceLimits.maxWorkers })
+
+        // Return the batch results - reviews will be handled by the caller
+        return batch
+      }
+
+      // Existing flow when workers are provided
       if (args.workers.length > 12) return yield* Effect.fail(new Error("swarm supports at most 12 workers per invocation"))
       if (args.workers.length < 2) return yield* Effect.fail(new Error("verified swarm mode requires at least two workers so work can be independently peer-reviewed"))
-      const caller = yield* Agent.get(ctx.agent)
       const sessions = yield* Session.Service
       const parent = yield* sessions.get(ctx.sessionID as SessionID)
       const config = yield* Config.Service
@@ -435,4 +490,4 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       }
     }),
   }),
-}
+})

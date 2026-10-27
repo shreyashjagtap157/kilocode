@@ -11,6 +11,7 @@ import { Permission } from "@/permission"
 import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { KiloTask } from "@/kilocode/tool/task"
 import { SessionID } from "@/session/schema"
+import { randomUUID } from "node:crypto"
 
 type Action = Permission.Rule["action"]
 
@@ -177,7 +178,7 @@ export function readOnlyPermissions(input: {
       ...allowedShellCommands.flatMap((pattern) =>
         shellOperatorSuffixes.map((operator) => ({
           permission: "bash",
-          pattern: \`\${pattern}\${operator}*\`,
+          pattern: `${pattern}${operator}*`,
           action: "deny" as const,
         })),
       ),
@@ -185,6 +186,123 @@ export function readOnlyPermissions(input: {
   )
 }
 const restrictiveness: Record<Action, number> = { allow: 0, ask: 1, deny: 2 }
+
+/** Generate a default team plan from a high-level objective. Uses sensible
+ *  specialist roles and task dependencies suitable for typical software projects.
+ *  Returns a structured plan that can be passed to createTeamPlan or consumed
+ *  directly by the swarm execution path. */
+export function generateDefaultTeamPlanFromObjective(objective: string): {
+  plan: string
+  planId: string
+  specialistRoles: string[]
+  tasks: { id: string; title: string; description: string }[]
+  dependencies: { taskId: string; dependsOn: string[] }[]
+  executionStrategy: { concurrency: number; strategy: string }
+  verificationStrategy: { reviewCount: number; independent: boolean }
+  acceptanceCriteria: string[]
+  integrationResponsibilities: string[]
+  resourceLimits: { maxWorkers: number; maxDurationMs: number }
+  assumptions: string[]
+} {
+  // Default specialist roles for a software project
+  const specialistRoles = ["architect", "implementer", "tester", "reviewer"]
+
+  // Default tasks based on common software development workflow
+  const tasks = [
+    { id: "tsk_1", title: "Architectural Design", description: "Design the overall architecture and patterns" },
+    { id: "tsk_2", title: "Implementation", description: "Implement the core functionality" },
+    { id: "tsk_3", title: "Testing", description: "Write and run tests to verify the implementation" },
+    { id: "tsk_4", title: "Code Review", description: "Peer review of implemented code" }
+  ]
+
+  // Dependencies: tsk_2 depends on tsk_1, tsk_3 depends on tsk_2, tsk_4 depends on tsk_3
+  const dependencies = [
+    { taskId: "tsk_2", dependsOn: ["tsk_1"] },
+    { taskId: "tsk_3", dependsOn: ["tsk_2"] },
+    { taskId: "tsk_4", dependsOn: ["tsk_3"] }
+  ]
+
+  // Execution strategy: sequential with some parallelism (concurrency 2)
+  const executionStrategy = { concurrency: 2, strategy: "sequential" }
+
+  // Verification: 2 independent reviews per task
+  const verificationStrategy = { reviewCount: 2, independent: true }
+
+  // Acceptance criteria
+  const acceptanceCriteria = [
+    "All tasks complete with passing reviews",
+    "Evidence supports all claimed results",
+    "No blocking findings remain unresolved"
+  ]
+
+  // Integration responsibilities
+  const integrationResponsibilities = ["Integrate accepted work, run final verification"]
+
+  // Resource limits
+  const resourceLimits = { maxWorkers: 4, maxDurationMs: 30_000 }
+
+  // Assumptions
+  const assumptions = [
+    "All team members have access to the same codebase",
+    "LLM providers are available and configured",
+    "Tasks can be executed independently"
+  ]
+
+  return {
+    plan: "",
+    planId: `plan_${randomUUID()}`,
+    specialistRoles,
+    tasks,
+    dependencies,
+    executionStrategy,
+    verificationStrategy,
+    acceptanceCriteria,
+    integrationResponsibilities,
+    resourceLimits,
+    assumptions
+  }
+}
+
+/** Build a structured team plan from a high-level objective. */
+export function createTeamPlan({
+  objective,
+  acceptanceCriteria,
+  specialistRoles,
+  tasks,
+  dependencies,
+  executionStrategy,
+  verificationStrategy,
+  integrationResponsibilities,
+  resourceLimits,
+  assumptions,
+}: {
+  objective: string
+  acceptanceCriteria: string[]
+  specialistRoles: string[]
+  tasks: { id: string; title: string; description: string }[]
+  dependencies: { taskId: string; dependsOn: string[] }[]
+  executionStrategy: { concurrency: number; strategy: string }
+  verificationStrategy: { reviewCount: number; independent: boolean }
+  integrationResponsibilities: string[]
+  resourceLimits: { maxWorkers: number; maxDurationMs: number }
+  assumptions: string[]
+}): { plan: string; planId: string } {
+  const planId = `plan_${randomUUID()}`
+  const plan = JSON.stringify({
+    objective,
+    acceptanceCriteria,
+    specialistRoles,
+    tasks,
+    dependencies,
+    executionStrategy,
+    verificationStrategy,
+    integrationResponsibilities,
+    resourceLimits,
+    assumptions,
+  }, null, 2)
+  return { plan, planId }
+}
+
 const specificity = (pattern: string) => pattern.replaceAll("*", "").length
 
 export function intersect(...rulesets: Permission.Ruleset[]): Permission.Rule[] {
@@ -247,5 +365,8 @@ export const DynamicAgentFactory = {
       canTask,
       canTodo,
     }
+  },
+  generateDefaultTeamPlanFromObjective(objective: string) {
+    return generateDefaultTeamPlanFromObjective(objective)
   },
 } as const
