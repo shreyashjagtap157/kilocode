@@ -1518,4 +1518,91 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("reviewer-task single-use is enforced across swarms", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const otherSwarmId = yield* SwarmState.createSwarm()
+        const targetId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_cross_swarm_target" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_cross_swarm_reviewer" as any })
+        const forgedTargetId = yield* SwarmState.createTask({ swarmId: otherSwarmId, actor: "act_test", corrId: "cor_cross_swarm_forged_target" as any })
+        let targetVersion = 0
+        let reviewerVersion = 0
+        let forgedTargetVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId: targetId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_cross_swarm_target" as any })
+          targetVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_cross_swarm_reviewer" as any })
+          reviewerVersion += 1
+          yield* SwarmState.transition({ taskId: forgedTargetId, to, expectedVersion: forgedTargetVersion, actor: "act_test", corrId: "cor_cross_swarm_forged_target" as any })
+          forgedTargetVersion += 1
+        }
+
+        const { db } = yield* Database.Service
+        const reviewerSessionId = "ses_cross_swarm_reviewer"
+        const command = "bun test test/kilocode/swarm/state.test.ts"
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, ${reviewerSessionId}, ${"owner_test"}, ${"lease_cross_swarm"}, 0, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        yield* seedHostCommandPart(db, { sessionId: reviewerSessionId, command })
+
+        const report = {
+          verdict: "pass",
+          summary: "A valid review of the target in the reviewer's own swarm.",
+          checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+          evidence: [{ id: "e1", kind: "test", reference: command, detail: "Persisted test command exited zero.", result: "pass", exitCode: 0 }],
+          blockingFindings: [],
+          uncertainties: [],
+        }
+        const recorded = yield* SwarmVerification.recordReview({
+          taskId: targetId,
+          reviewerTaskId,
+          reviewerSessionId,
+          reviewerAgent: "reviewer",
+          corrId: "cor_cross_swarm_valid_review" as any,
+          report,
+          executedCommands: [verifiedCommand(command, reviewerSessionId)],
+        })
+        expect(recorded.accepted).toBe(true)
+
+        // Bypass recordReview and publish a second review event in a different
+        // swarm. Reviewer-task identity must remain globally single-use at closure.
+        const events = yield* EventV2.Service
+        yield* events.publish(SwarmTaskReviewPassed, {
+          taskId: forgedTargetId as any,
+          swarmId: otherSwarmId,
+          reviewerTaskId: reviewerTaskId as any,
+          reviewerSessionId,
+          reviewerAgent: "reviewer",
+          verdict: "pass",
+          summary: report.summary,
+          evidenceJson: JSON.stringify(report.evidence),
+          executionEvidenceJson: JSON.stringify([verifiedCommand(command, reviewerSessionId)]),
+          checksJson: JSON.stringify(report.checks),
+          blockingFindingsJson: JSON.stringify(report.blockingFindings),
+          uncertaintiesJson: JSON.stringify(report.uncertainties),
+          corrId: "cor_cross_swarm_forged_review" as any,
+        })
+
+        const closure = yield* Effect.exit(SwarmState.transition({
+          taskId: reviewerTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerVersion,
+          actor: "act_test",
+          corrId: "cor_cross_swarm_closure" as any,
+        }))
+        expect(closure._tag).toBe("Failure")
+        const reviewer = yield* SwarmState.getTask(reviewerTaskId)
+        expect(reviewer.state).toBe("reviewing")
+        expect(reviewer.version).toBe(reviewerVersion)
+      }),
+      file,
+    )
+  })
+
 })
