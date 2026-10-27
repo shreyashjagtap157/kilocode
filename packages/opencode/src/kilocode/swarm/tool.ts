@@ -292,7 +292,15 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         }
         }),
       )
-      const reviewBatch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: reviewerPlans, concurrency: Math.min(reviewerPlans.length, args.maxWorkers ?? workerLimit) })
+      const reviewBatch = reviewerPlans.length > 0
+        ? yield* SwarmRuntime.runPlannedBatchSettled({
+            workers: reviewerPlans,
+            concurrency: Math.min(reviewerPlans.length, args.maxWorkers ?? workerLimit),
+          })
+        : {
+            completed: [] as Array<{ index: number; result: SwarmRuntime.PlannedResult }>,
+            failed: [] as Array<{ index: number; error: unknown }>,
+          }
       const reviewMessages = yield* Effect.forEach(reviewBatch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
       const reviews = yield* Effect.forEach(reviewBatch.completed, (reviewEntry) => Effect.gen(function* () {
         // completed[] is compacted when a reviewer fails; use the original reviewer-plan
