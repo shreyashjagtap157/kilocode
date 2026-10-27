@@ -776,13 +776,8 @@ describe("swarm state (M2)", () => {
           },
         })
         expect(review.accepted).toBe(true)
-        const result = yield* SwarmState.transition({
-          taskId, to: "accepted", expectedVersion: workerVersion, actor: "act_test", corrId: "cor_acceptance" as any,
-        })
-        expect(result.version).toBe(workerVersion + 1)
-        const task = yield* SwarmState.getTask(taskId)
-        expect(task.state).toBe("accepted")
-
+        // Complete the review job first. The target may still be accepted because
+        // its durable review event records the now-terminal independent reviewer.
         const reviewerCompletion = yield* SwarmState.transition({
           taskId: reviewerTaskId,
           to: "reviewed",
@@ -793,6 +788,13 @@ describe("swarm state (M2)", () => {
         expect(reviewerCompletion.version).toBe(reviewerVersion + 1)
         const reviewer = yield* SwarmState.getTask(reviewerTaskId)
         expect(reviewer.state).toBe("reviewed")
+
+        const result = yield* SwarmState.transition({
+          taskId, to: "accepted", expectedVersion: workerVersion, actor: "act_test", corrId: "cor_acceptance" as any,
+        })
+        expect(result.version).toBe(workerVersion + 1)
+        const task = yield* SwarmState.getTask(taskId)
+        expect(task.state).toBe("accepted")
       }),
       file,
     )
