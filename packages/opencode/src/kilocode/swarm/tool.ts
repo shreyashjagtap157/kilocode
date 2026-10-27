@@ -376,7 +376,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           .sort((left, right) => left.reviewerOrdinal - right.reviewerOrdinal)
         const required = workerReviews.slice(0, requiredReviews)
         if (required.length < requiredReviews) {
-          acceptanceFailures.set(entry.taskId, \`only \${required.length}/\${requiredReviews} independent review results completed\`)
+          acceptanceFailures.set(entry.taskId, `only ${required.length}/${requiredReviews} independent review results completed`)
           continue
         }
         if (!required.every((review) => review.accepted && review.reviewerTaskState === "reviewed" && !review.reviewerTaskStateFailure)) {
@@ -390,7 +390,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           to: "accepted",
           expectedVersion: task.version,
           actor: ctx.agent,
-          corrId: \`\${base}_accept\`,
+          corrId: `${base}_accept`,
         }))
         if (outcome._tag === "Failure") {
           if (Cause.hasInterrupts(outcome.cause)) return yield* Effect.interrupt
@@ -398,7 +398,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         } else {
           const committed = yield* SwarmState.getTask(entry.taskId)
           if (committed.state !== "accepted") {
-            acceptanceFailures.set(entry.taskId, \`acceptance transition returned but task state is \${committed.state}\`)
+            acceptanceFailures.set(entry.taskId, `acceptance transition returned but task state is ${committed.state}`)
           }
         }
       }
