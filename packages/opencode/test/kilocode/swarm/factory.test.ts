@@ -193,4 +193,25 @@ describe("DynamicAgentFactory", () => {
     expect(Permission.evaluate("bash", "bun test test/example.test.ts", original, policy).action).toBe("allow")
   })
 
+
+  test("objective-only plan is sequential, deterministic, and evidence-qualified", () => {
+    const plan = DynamicAgentFactory.generateDefaultTeamPlanFromObjective("  Design user authentication  ")
+    expect(plan.objective).toBe("Design user authentication")
+    expect(plan.tasks.map((task) => task.role)).toEqual(["architect", "implementer", "tester", "reviewer"])
+    expect(plan.tasks.map((task) => task.dependsOn)).toEqual([[], ["tsk_1"], ["tsk_2"], ["tsk_3"]])
+    expect(plan.execution).toEqual({ strategy: "sequential", concurrency: 1, maxWorkers: 4 })
+    expect(plan.verification).toEqual({ independentReviewsPerTask: 1, requireCommandEvidence: true })
+    expect(plan.tasks[0]?.readOnly).toBe(true)
+    expect(plan.tasks[1]?.readOnly).toBe(false)
+    expect(plan.tasks[2]?.readOnly).toBe(false)
+    expect(plan.tasks[3]?.readOnly).toBe(true)
+    expect(plan.tasks[1]?.prompt).toContain("Design user authentication")
+    expect(plan.acceptanceCriteria.length).toBeGreaterThanOrEqual(3)
+    expect(JSON.stringify(plan)).not.toContain("sessionID")
+  })
+
+  test("objective-only plan rejects a blank objective", () => {
+    expect(() => DynamicAgentFactory.generateDefaultTeamPlanFromObjective("   ")).toThrow("swarm objective must not be empty")
+  })
+
 })
