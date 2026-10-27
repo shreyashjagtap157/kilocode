@@ -12,6 +12,7 @@ import { BoardStore } from "@/kilocode/board/store"
 import { SwarmRuntime } from "./runtime"
 import { SwarmState } from "./state"
 import { SwarmVerification } from "./verification"
+import * as SwarmCommunications from "./communications"
 import { DynamicAgentFactory } from "./factory"
 
 const Worker = Schema.Struct({ agent: Schema.String, role: Schema.String, prompt: Schema.String })
@@ -310,56 +311,27 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         { concurrency: "unbounded" },
       )
       const boardHistory = boardEnabled
-        ? yield* Effect.gen(function* () {
-            let cursor: string | undefined
-            let hasMore = true
-            let truncated = false
-            let pages = 0
-            const collected: Array<{ from: string; to: string; type: string; body: string; id: string }> = []
-            // BoardStore caps a read at 50 items. Follow its cursor in bounded pages;
-            // keep the most recent 30 messages so a busy shared board cannot make the
-            // final model result unbounded.
-            while (hasMore && pages < 20) {
-              const page = yield* BoardStore.read({
-                sessionID: parent.id as SessionID,
-                limit: 50,
-                ...(cursor ? { since: cursor } : {}),
-              })
-              collected.push(
-                ...page.messages
-                  .filter((message) => message.from !== "main")
-                  .map((message) => ({
-                    from: message.fromLabel ?? message.from,
-                    to: message.toLabel ?? message.to,
-                    type: message.type,
-                    body: message.body,
-                    id: message.id,
-                  })),
-              )
-              pages += 1
-              if (!page.hasMore) {
-                hasMore = false
-                break
-              }
-              if (!page.cursor || page.cursor === cursor) {
-                truncated = true
-                hasMore = false
-                break
-              }
-              cursor = page.cursor
-            }
-            if (hasMore) truncated = true
-            if (collected.length > 30) truncated = true
-            return {
-              total: collected.length,
-              truncated,
-              messages: collected.slice(-30).map((message) => ({
-                ...message,
-                body: message.body.length > 1200 ? message.body.slice(0, 1200) + " … [truncated]" : message.body,
-              })),
-            }
-          })
-        : { total: 0, truncated: false, messages: [] as Array<{ from: string; to: string; type: string; body: string; id: string }> }
+        ? yield* SwarmCommunications.collect(
+            (cursor) => BoardStore.read({
+              sessionID: parent.id as SessionID,
+              limit: 50,
+              ...(cursor ? { since: cursor } : {}),
+            }).pipe(Effect.map((page) => ({
+              hasMore: page.hasMore,
+              ...(page.cursor ? { cursor: page.cursor } : {}),
+              messages: page.messages
+                .filter((message) => message.from !== "main")
+                .map((message) => ({
+                  from: message.fromLabel ?? message.from,
+                  to: message.toLabel ?? message.to,
+                  type: message.type,
+                  body: message.body,
+                  id: message.id,
+                })),
+            }))),
+            { maxPages: 20, maxMessages: 30, maxBodyChars: 1200 },
+          )
+        : { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
       const communications = boardHistory.messages
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
       const reviewerFailures = reviewBatch.failed.map((entry) => ({
@@ -376,7 +348,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       return {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
-          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length + unavailablePeerAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length + unavailablePeerAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}${boardHistory.truncated ? ` (latest messages only; ${boardHistory.total} available)` : ""}`,
+          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length + unavailablePeerAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length + unavailablePeerAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}${boardHistory.truncated ? ` (latest messages shown; ${boardHistory.scanned} observed)` : ""}`,
           ...entries.flatMap((entry, index) => {
             const review = reviews.find((item) => item.workerTaskId === entry.taskId)
             const details = review as (typeof review & {
@@ -426,7 +398,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           ...reviewerFailures.flatMap((entry) => [`\n## REVIEW FAILED: ${entry.role} (target: ${entry.targetRole})`, entry.error]),
           ...reviewerStateFailures.flatMap((entry) => [`\n## REVIEW TASK LIFECYCLE FAILED: ${entry.reviewerTaskId} (target: ${entry.workerTaskId})`, String(entry.error)]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, reviewerFailureAnnouncements, unavailablePeerAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications, communicationCount: boardHistory.total, communicationsTruncated: boardHistory.truncated },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, reviewerFailureAnnouncements, unavailablePeerAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications, communicationMessagesScanned: boardHistory.scanned, communicationsTruncated: boardHistory.truncated },
       }
     }),
   }),
