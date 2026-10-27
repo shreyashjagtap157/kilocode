@@ -1372,13 +1372,6 @@ describe("swarm state (M2)", () => {
 
         // A caller that bypasses recordReview must not reuse the already-consumed
         // reviewer task by publishing a second structurally plausible PASS directly.
-        yield* SwarmState.transition({
-          taskId: reviewerTaskId,
-          to: "reviewed",
-          expectedVersion: reviewerVersion,
-          actor: "act_test",
-          corrId: "cor_single_use_close" as any,
-        })
         const events = yield* EventV2.Service
         yield* events.publish(SwarmTaskReviewPassed, {
           taskId: secondTargetId as any,
@@ -1395,6 +1388,15 @@ describe("swarm state (M2)", () => {
           uncertaintiesJson: JSON.stringify(report.uncertainties),
           corrId: "cor_single_use_direct_publish" as any,
         })
+        const reviewerClosure = yield* Effect.exit(SwarmState.transition({
+          taskId: reviewerTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerVersion,
+          actor: "act_test",
+          corrId: "cor_single_use_close_with_duplicate" as any,
+        }))
+        expect(reviewerClosure._tag).toBe("Failure")
+
         const forgedAcceptance = yield* Effect.exit(SwarmState.transition({
           taskId: secondTargetId,
           to: "accepted",
