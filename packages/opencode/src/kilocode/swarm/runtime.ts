@@ -38,10 +38,20 @@ export namespace SwarmRuntime {
     swarmId: string; parentSessionId: SessionID; description: string; prompt: string; caller: Agent.Info; subagent: Agent.Info; actor: string; corrId: string
     mcp?: ConfigType.Info["mcp"]; depth?: number; maxDepth?: number; leaseMs?: number; renewalIntervalMs?: number; ownerId?: string
     readOnly?: boolean
+    /** Explicitly disables board tools in the child prompt when advisory coordination is unavailable. */
+    boardEnabled?: boolean
     /** undefined inherits the active session task; null deliberately creates a root task (e.g. reviewer work). */
     parentTaskId?: string | null
   }
   export type PlannedResult = { taskId: string; sessionId: string; agent: string; durationMs: number }
+
+  /** Construct per-turn tool availability, preserving the existing task/todo capability rules. */
+  export const promptTools = (input: { canTask: boolean; canTodo: boolean; boardEnabled?: boolean }) => ({
+    question: false,
+    ...(input.boardEnabled === false ? { board_read: false, board_post: false } : {}),
+    ...(input.canTodo ? {} : { todowrite: false }),
+    ...(input.canTask ? {} : { task: false }),
+  })
 
   export const runPlanned = Effect.fn("SwarmRuntime.runPlanned")(function* (input: PlannedInput) {
     const startedAt = Date.now()
@@ -103,7 +113,7 @@ export namespace SwarmRuntime {
       const ownerId = input.ownerId ?? `wrk_${randomUUID()}`
       const admission = yield* SwarmDispatcher.admit({ taskId, ownerId, leaseMs: input.leaseMs ?? 30_000, actor: input.actor, corrId: input.corrId })
       const work = Effect.gen(function* () {
-        yield* prompt.prompt({ messageID: MessageID.ascending(), sessionID: child.id, model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID }, variant: resolved.variant, agent: executionPlan.agent, tools: { question: false, ...(executionPlan.canTodo ? {} : { todowrite: false }), ...(executionPlan.canTask ? {} : { task: false }) }, parts: [{ type: "text", text: input.prompt }] })
+        yield* prompt.prompt({ messageID: MessageID.ascending(), sessionID: child.id, model: { modelID: resolved.model.modelID, providerID: resolved.model.providerID }, variant: resolved.variant, agent: executionPlan.agent, tools: promptTools({ canTask: executionPlan.canTask, canTodo: executionPlan.canTodo, boardEnabled: input.boardEnabled }), parts: [{ type: "text", text: input.prompt }] })
         yield* drain.wait(child.id)
       }).pipe(Effect.asVoid)
       yield* SwarmWorker.resumeSession({ taskId, sessionId: child.id, leaseId: admission.leaseId, fence: admission.fence, actor: input.actor, corrId: input.corrId, leaseMs: input.leaseMs, renewalIntervalMs: input.renewalIntervalMs, work })
