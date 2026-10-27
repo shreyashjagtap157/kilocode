@@ -117,15 +117,19 @@ export namespace SwarmState {
 
   // --- swarm -----------------------------------------------------------------
 
-  export const createSwarm = Effect.fn("SwarmState.createSwarm")(function* (input: { maxWorkers?: number } = {}) {
+    export const createSwarm = Effect.fn("SwarmState.createSwarm")(function* (input: { maxWorkers?: number; requiredReviews?: number } = {}) {
     const { db } = yield* Database.Service
     const maxWorkers = input.maxWorkers ?? 4
+    const requiredReviews = input.requiredReviews ?? 1
     if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 0) {
       return yield* Effect.fail(new InvalidCapacity({ message: "maxWorkers must be a non-negative safe integer" }))
     }
+    if (!Number.isSafeInteger(requiredReviews) || requiredReviews < 1 || requiredReviews > 4) {
+      return yield* Effect.fail(new InvalidCapacity({ message: "requiredReviews must be an integer between 1 and 4" }))
+    }
     const id = newSwarmId()
     const now = Date.now()
-    yield* db.run(sql`INSERT INTO kilo_swarm (id, state, version, max_workers, time_created, time_updated) VALUES (${id}, 'active', 0, ${maxWorkers}, ${now}, ${now})`)
+    yield* db.run(sql`INSERT INTO kilo_swarm (id, state, version, max_workers, required_reviews, time_created, time_updated) VALUES (${id}, 'active', 0, ${maxWorkers}, ${requiredReviews}, ${now}, ${now})`)
     return id
   })
 
@@ -231,97 +235,118 @@ export namespace SwarmState {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `child task ${child.id} is not accepted/integrated (${child.state})` }))
       }
 
-      // The latest review outcome is authoritative. A stale earlier PASS must not
-      // override a later failed/inconclusive review.
-      const review = yield* db
-        .get<{ type: string; data: Record<string, unknown> | string }>(sql`
-          SELECT type, data FROM event
-          WHERE aggregate_id = ${taskId}
-            AND (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
-          ORDER BY seq DESC LIMIT 1
-        `)
+      // Acceptance is qualified by the latest N review outcomes recorded on this swarm.
+      // A later fail/inconclusive review remains authoritative; an earlier PASS cannot
+      // satisfy the gate if it is displaced from the required set.
+      const swarm = yield* db
+        .get<{ required_reviews: number }>(sql`SELECT required_reviews FROM kilo_swarm WHERE id = ${swarmId}`)
         .pipe(Effect.orDie)
-      if (!review || !review.type.startsWith("swarm.task.review_passed")) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has no latest passing independent review` }))
+      const requiredReviews = swarm?.required_reviews
+      if (!Number.isSafeInteger(requiredReviews) || requiredReviews! < 1 || requiredReviews! > 4) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `swarm ${swarmId} has an invalid required independent review count` }))
       }
 
-      let data: Record<string, unknown> | undefined
-      try {
-        const decoded = typeof review.data === "string" ? JSON.parse(review.data) : review.data
-        if (typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)) data = decoded as Record<string, unknown>
-      } catch {
-        data = undefined
-      }
-      if (
-        !data ||
-        data.taskId !== taskId ||
-        data.swarmId !== swarmId ||
-        data.verdict !== "pass" ||
-        typeof data.reviewerTaskId !== "string" ||
-        data.reviewerTaskId === taskId ||
-        typeof data.reviewerSessionId !== "string"
-      ) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has malformed or non-independent review provenance` }))
-      }
-
-      const reviewerTaskId = data.reviewerTaskId as string
-      const reviewerSessionId = data.reviewerSessionId as string
-      const reviewerUse = yield* db
-        .get<{ count: number }>(sql`
-          SELECT COUNT(*) AS count FROM event
-          WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
-            AND json_extract(data, '$.reviewerTaskId') = ${reviewerTaskId}
-        `)
-        .pipe(Effect.orDie)
-      if (!reviewerUse || reviewerUse.count !== 1) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `reviewer task ${reviewerTaskId} must be used for exactly one durable review` }))
-      }
-      const reviewer = yield* db
-        .get<{ id: string; swarm_id: string; state: string; fence: number }>(sql`SELECT id, swarm_id, state, fence FROM kilo_swarm_task WHERE id = ${reviewerTaskId}`)
-        .pipe(Effect.orDie)
-      const binding = yield* db
-        .get<{ session_id: string; swarm_id: string; fence: number; state: string }>(sql`SELECT session_id, swarm_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${reviewerTaskId}`)
-        .pipe(Effect.orDie)
-      if (
-        !reviewer ||
-        reviewer.swarm_id !== swarmId ||
-        reviewer.state !== "reviewed" ||
-        !binding ||
-        // A live binding is required to create the review event, but recovery
-        // may expire it after the reviewer task is terminally reviewed. At this
-        // point it is audit provenance only; the task fence/session/event and
-        // host tool transcript must still match exactly.
-        (binding.state !== "bound" && binding.state !== "expired") ||
-        binding.fence !== reviewer.fence ||
-        binding.swarm_id !== swarmId ||
-        binding.session_id !== reviewerSessionId
-      ) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review has invalid independent reviewer provenance` }))
+      const reviewRows: Array<{ type: string; data: Record<string, unknown> | string }> = []
+      for (let offset = 0; offset < requiredReviews!; offset += 1) {
+        const review = yield* db
+          .get<{ type: string; data: Record<string, unknown> | string }>(sql`
+            SELECT type, data FROM event
+            WHERE aggregate_id = ${taskId}
+              AND (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+            ORDER BY seq DESC LIMIT 1 OFFSET ${offset}
+          `)
+          .pipe(Effect.orDie)
+        if (!review || !review.type.startsWith("swarm.task.review_passed")) {
+          return yield* Effect.fail(new AcceptanceBlocked({
+            message: `task ${taskId} needs ${requiredReviews} latest passing independent reviews; only ${reviewRows.length + (review ? 1 : 0)} qualifying outcomes are present`,
+          }))
+        }
+        reviewRows.push(review)
       }
 
-      const evidenceProblems = SwarmVerification.qualificationProblems({
-        summary: data.summary,
-        evidenceJson: data.evidenceJson,
-        checksJson: data.checksJson,
-        blockingFindingsJson: data.blockingFindingsJson,
-        uncertaintiesJson: data.uncertaintiesJson,
-        executionEvidenceJson: data.executionEvidenceJson,
-        reviewerSessionId,
-      })
-      if (evidenceProblems.length > 0) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review evidence is invalid: ${evidenceProblems[0]}` }))
+      const reviewerTaskIds = new Set<string>()
+      const reviewerSessionIds = new Set<string>()
+      for (const review of reviewRows) {
+        let data: Record<string, unknown> | undefined
+        try {
+          const decoded = typeof review.data === "string" ? JSON.parse(review.data) : review.data
+          if (typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)) data = decoded as Record<string, unknown>
+        } catch {
+          data = undefined
+        }
+        if (
+          !data ||
+          data.taskId !== taskId ||
+          data.swarmId !== swarmId ||
+          data.verdict !== "pass" ||
+          typeof data.reviewerTaskId !== "string" ||
+          data.reviewerTaskId === taskId ||
+          typeof data.reviewerSessionId !== "string" ||
+          !data.reviewerSessionId.trim()
+        ) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has malformed or non-independent review provenance` }))
+        }
+
+        const reviewerTaskId = data.reviewerTaskId
+        const reviewerSessionId = data.reviewerSessionId
+        if (reviewerTaskIds.has(reviewerTaskId) || reviewerSessionIds.has(reviewerSessionId)) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} does not have ${requiredReviews} distinct independent reviewer tasks and sessions` }))
+        }
+        reviewerTaskIds.add(reviewerTaskId)
+        reviewerSessionIds.add(reviewerSessionId)
+
+        const reviewerUse = yield* db
+          .get<{ count: number }>(sql`
+            SELECT COUNT(*) AS count FROM event
+            WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+              AND json_extract(data, '$.reviewerTaskId') = ${reviewerTaskId}
+          `)
+          .pipe(Effect.orDie)
+        if (!reviewerUse || reviewerUse.count !== 1) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `reviewer task ${reviewerTaskId} must be used for exactly one durable review` }))
+        }
+
+        const reviewer = yield* db
+          .get<{ id: string; swarm_id: string; state: string; fence: number }>(sql`SELECT id, swarm_id, state, fence FROM kilo_swarm_task WHERE id = ${reviewerTaskId}`)
+          .pipe(Effect.orDie)
+        const binding = yield* db
+          .get<{ session_id: string; swarm_id: string; fence: number; state: string }>(sql`SELECT session_id, swarm_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${reviewerTaskId}`)
+          .pipe(Effect.orDie)
+        if (
+          !reviewer ||
+          reviewer.swarm_id !== swarmId ||
+          reviewer.state !== "reviewed" ||
+          !binding ||
+          (binding.state !== "bound" && binding.state !== "expired") ||
+          binding.fence !== reviewer.fence ||
+          binding.swarm_id !== swarmId ||
+          binding.session_id !== reviewerSessionId
+        ) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review has invalid independent reviewer provenance` }))
+        }
+
+        const evidenceProblems = SwarmVerification.qualificationProblems({
+          summary: data.summary,
+          evidenceJson: data.evidenceJson,
+          checksJson: data.checksJson,
+          blockingFindingsJson: data.blockingFindingsJson,
+          uncertaintiesJson: data.uncertaintiesJson,
+          executionEvidenceJson: data.executionEvidenceJson,
+          reviewerSessionId,
+        })
+        if (evidenceProblems.length > 0) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} review evidence is invalid: ${evidenceProblems[0]}` }))
+        }
+
+        const hostProblems = yield* SwarmVerification.hostExecutionProblems(db, {
+          executionEvidenceJson: data.executionEvidenceJson,
+          reviewerSessionId,
+        }).pipe(Effect.orDie)
+        if (hostProblems.length > 0) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} host execution verification failed: ${hostProblems[0]}` }))
+        }
       }
 
-      // Finally tie the review proof back to the canonical persisted completed
-      // shell-tool part for this exact reviewer session. A plausible but forged
-      // command record cannot qualify a task.
-      const hostProblems = yield* SwarmVerification.hostExecutionProblems(db, {
-        executionEvidenceJson: data.executionEvidenceJson,
-        reviewerSessionId,
-      }).pipe(Effect.orDie)
-      if (hostProblems.length > 0) {
-        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} host execution verification failed: ${hostProblems[0]}` }))
-      }
     })
 
   /**
