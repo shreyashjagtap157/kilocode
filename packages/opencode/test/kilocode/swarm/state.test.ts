@@ -1095,6 +1095,14 @@ describe("swarm state (M2)", () => {
           uncertaintiesJson: "[]",
           corrId: "cor_direct_review" as any,
         })
+        const reviewerClosure = yield* Effect.exit(SwarmState.transition({
+          taskId: reviewerTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerVersion,
+          actor: "act_test",
+          corrId: "cor_direct_review_close" as any,
+        }))
+        expect(reviewerClosure._tag).toBe("Failure")
         const attempt = yield* Effect.exit(SwarmState.transition({
           taskId, to: "accepted", expectedVersion: targetVersion, actor: "act_test", corrId: "cor_direct_accept" as any,
         }))
