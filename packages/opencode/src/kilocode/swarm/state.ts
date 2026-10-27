@@ -339,6 +339,7 @@ export namespace SwarmState {
       if (
         !data ||
         data.reviewerTaskId !== taskId ||
+        data.taskId !== row.aggregate_id ||
         data.swarmId !== swarmId ||
         typeof data.reviewerSessionId !== "string" ||
         !data.reviewerSessionId
