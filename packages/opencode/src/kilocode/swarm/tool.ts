@@ -330,7 +330,50 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
           `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length + unavailablePeerAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length + unavailablePeerAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}`,
-          ...entries.flatMap((entry, index) => { const review = reviews.find((item) => item.workerTaskId === entry.taskId); return [`\n## ${index + 1}. ${entry.role}`, entry.finding, `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`, ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.join("; ")}`] : []), `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`] }),
+          ...entries.flatMap((entry, index) => {
+            const review = reviews.find((item) => item.workerTaskId === entry.taskId)
+            const details = review as (typeof review & {
+              executionEvidence?: Array<{ command: string; exitCode: number | null; partId: string; messageId: string; callId: string; outputSha256: string }>
+              executionEvidenceProblems?: string[]
+            })
+            const checks = Array.isArray(review?.checks)
+              ? (review.checks as Array<{ criterion?: string; verdict?: string; evidenceIds?: string[] }>)
+              : []
+            const evidence = Array.isArray(review?.evidence)
+              ? (review.evidence as Array<{ id?: string; kind?: string; reference?: string; detail?: string; result?: string; exitCode?: number }>)
+              : []
+            const executions = Array.isArray(details?.executionEvidence) ? details.executionEvidence : []
+            const executionProblems = Array.isArray(details?.executionEvidenceProblems) ? details.executionEvidenceProblems : []
+            return [
+              `\n## ${index + 1}. ${entry.role}`,
+              entry.finding,
+              `Review: ${review?.verdict ?? "missing"}${review?.accepted ? " (ACCEPTED)" : " (NOT ACCEPTED)"}`,
+              ...(review?.summary ? [`Review summary: ${String(review.summary).slice(0, 500)}`] : []),
+              ...(checks.length
+                ? ["Verification checks:", ...checks.slice(0, 6).map((check) =>
+                    `- ${String(check.verdict ?? "unknown")}: ${String(check.criterion ?? "unnamed criterion").slice(0, 200)} [evidence: ${(check.evidenceIds ?? []).slice(0, 6).join(", ")}]`,
+                  )]
+                : []),
+              ...(evidence.length
+                ? ["Review evidence:", ...evidence.slice(0, 6).map((item) =>
+                    `- ${String(item.id ?? "evidence")} ${String(item.kind ?? "artifact")}/${String(item.result ?? "observed")}: ${String(item.reference ?? "").slice(0, 240)}${item.exitCode === undefined ? "" : ` (exit ${item.exitCode})`}${item.detail ? ` — ${String(item.detail).slice(0, 240)}` : ""}`,
+                  )]
+                : []),
+              ...(executions.length
+                ? [
+                    "Host-recorded validation executions:",
+                    ...executions.slice(0, 4).map((execution) =>
+                      `- ${execution.command} (exit ${String(execution.exitCode)}; part=${execution.partId}; message=${execution.messageId}; call=${execution.callId}; sha256=${execution.outputSha256.slice(0, 16)}…)`,
+                    ),
+                  ]
+                : []),
+              ...(executionProblems.length
+                ? [`Execution evidence rejected: ${executionProblems.slice(0, 4).map((problem) => String(problem).slice(0, 220)).join("; ")}`]
+                : []),
+              ...(review?.blockingFindings?.length ? [`Blocking findings: ${review.blockingFindings.slice(0, 6).join("; ")}`] : []),
+              `(task=${entry.taskId}, session=${entry.sessionId}, duration=${entry.durationMs}ms)`,
+            ]
+          }),
           ...(communications.length > 0 ? ["\n## Team communication", ...communications.map((message) => `- ${message.from} → ${message.to} [${message.type}]: ${message.body}`)] : []),
           ...failures.flatMap((entry) => [`\n## FAILED: ${entry.role}`, entry.error]),
           ...reviewerFailures.flatMap((entry) => [`\n## REVIEW FAILED: ${entry.role} (target: ${entry.targetRole})`, entry.error]),
