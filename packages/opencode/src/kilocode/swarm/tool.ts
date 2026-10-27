@@ -278,7 +278,8 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const reviewerTargets: Array<{ targetIndex: number; reviewerOrdinal: number }> = []
       const reviewerPlans = entries.length < 2 ? [] : entries.flatMap((entry, targetIndex) =>
         Array.from({ length: requiredReviews }, (_, reviewerOrdinal) => {
-          const reviewerIndex = entries[(targetIndex + reviewerOrdinal + 1) % entries.length].index
+          const peerOffset = Math.min(reviewerOrdinal + 1, entries.length - 1)
+          const reviewerIndex = entries[(targetIndex + peerOffset) % entries.length].index
           reviewerTargets.push({ targetIndex, reviewerOrdinal })
         return {
           swarmId, parentSessionId: parent.id, description: `Independent reviewer ${reviewerOrdinal + 1}/${requiredReviews} for ${entry.role}`,
