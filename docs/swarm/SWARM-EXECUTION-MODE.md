@@ -16,7 +16,7 @@ When `Swarm` is selected as the active primary mode, the agent is instructed to:
 8. run a distinct reviewer wave with separate durable reviewer tasks/sessions;
 9. synthesize worker findings and peer communications into one result.
 
-The runtime continues to enforce the swarm's worker limit, permission ceiling, durable task admission, fencing, leases, cancellation, and bounded concurrency. Direct use of the shared board is guarded by `BoardEnabled` and requests both `board_read` and `board_post` permissions first. If the board is explicitly disabled, workers still run, but swarm will not seed, read, or post shared-board messages.
+The runtime continues to enforce the swarm's worker limit, permission ceiling, durable task admission, fencing, leases, cancellation, and bounded concurrency. Direct use of the shared board is guarded by `BoardEnabled` and requests both `board_read` and `board_post` permissions first. If the board is explicitly disabled, either permission is declined, or the board store fails to initialize/read, the swarm still runs without board coordination and reports the limitation. In that case child worker/reviewer prompts explicitly disable `board_read` and `board_post`, avoiding repeated permission prompts against an unavailable advisory service. Durable task verification and acceptance remain fail-closed regardless of board availability.
 
 ## Review and acceptance semantics
 
