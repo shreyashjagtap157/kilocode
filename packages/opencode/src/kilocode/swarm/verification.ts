@@ -81,6 +81,9 @@ export namespace SwarmVerification {
       if (!item.id.trim()) result.push("evidence id is empty")
       if (!item.reference.trim()) result.push(`evidence ${item.id} has no reference`)
       if (!item.detail.trim()) result.push(`evidence ${item.id} has no details`)
+      if (item.result === "pass" && item.exitCode !== undefined && item.exitCode !== 0) {
+        result.push(`evidence ${item.id} claims pass with nonzero exit code ${item.exitCode}`)
+      }
     }
     const referencedEvidence = new Set<string>()
     for (const check of report.checks) {
@@ -88,6 +91,7 @@ export namespace SwarmVerification {
       if (check.verdict !== "pass") result.push(`criterion did not pass: ${check.criterion}`)
       if (!check.evidenceIds.length) result.push(`criterion has no evidence: ${check.criterion}`)
       let hasPassingEvidence = false
+      let hasFailingEvidence = false
       for (const id of check.evidenceIds) {
         const item = evidence.get(id)
         if (!item) {
@@ -96,9 +100,13 @@ export namespace SwarmVerification {
         }
         referencedEvidence.add(id)
         if (item.result === "pass") hasPassingEvidence = true
+        if (item.result === "fail") hasFailingEvidence = true
       }
       if (check.verdict === "pass" && check.evidenceIds.length > 0 && !hasPassingEvidence) {
         result.push(`criterion has no passing linked evidence: ${check.criterion}`)
+      }
+      if (check.verdict === "pass" && hasFailingEvidence) {
+        result.push(`criterion cites failing evidence despite a passing verdict: ${check.criterion}`)
       }
     }
     for (const item of report.evidence) {
