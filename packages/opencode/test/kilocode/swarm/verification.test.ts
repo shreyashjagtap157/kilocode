@@ -96,4 +96,29 @@ describe("SwarmVerification command evidence", () => {
     expect(problems.some((problem) => problem.includes("claims pass with nonzero exit code"))).toBe(true)
   })
 
+
+  test("rejects a command reference that only normalizes to the recorded invocation", () => {
+    const command = "bun test"
+    const problems = SwarmVerification.qualificationProblems({
+      summary: "The evidence must point to the exact command that ran.",
+      evidenceJson: JSON.stringify([
+        { id: "e1", kind: "command", reference: "bun  test", detail: "The command passed.", result: "pass", exitCode: 0 },
+      ]),
+      checksJson: JSON.stringify([{ criterion: "tests pass", verdict: "pass", evidenceIds: ["e1"] }]),
+      blockingFindingsJson: "[]",
+      uncertaintiesJson: "[]",
+      executionEvidenceJson: JSON.stringify([{
+        command,
+        exitCode: 0,
+        sourceSessionId: "ses_reviewer",
+        messageId: "msg_reviewer",
+        partId: "prt_reviewer",
+        callId: "call_reviewer",
+        outputSha256: "a".repeat(64),
+      }]),
+      reviewerSessionId: "ses_reviewer",
+    })
+    expect(problems.some((problem) => problem.includes("no passing test/validation command"))).toBe(true)
+  })
+
 })
