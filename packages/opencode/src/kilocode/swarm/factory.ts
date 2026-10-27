@@ -95,7 +95,7 @@ const readOnlyShellCommands = [
   "npx jest*",
 ] as const
 
-const shellOperatorSuffixes = [">", ">>", ";", "|", "&&", "||", "$(", "`"] as const
+const shellOperatorSuffixes = [">", ">>", "<", "&", ";", "\n", "|", "&&", "||", "$(", "`"] as const
 
 const shellDeniedPrefixes = [
   // ripgrep can launch arbitrary preprocessors; that is not read-only inspection.
