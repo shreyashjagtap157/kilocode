@@ -17,7 +17,7 @@ import { DynamicAgentFactory } from "./factory"
 
 const Worker = Schema.Struct({ agent: Schema.String, role: Schema.String, prompt: Schema.String })
 const Parameters = Schema.Struct({
-  workers: Schema.Array(Worker),
+  workers: Schema.optional(Schema.Array(Worker)),
   maxWorkers: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1), Schema.lessThanOrEqualTo(12))),
   objective: Schema.String,
 })
@@ -81,21 +81,86 @@ function verifiedExecutions(
   return executions
 }
 
+
+function selectAgentForRole(input: {
+  role: string
+  preferredAgents: readonly string[]
+  availableAgents: readonly Agent.Info[]
+}) {
+  const eligible = input.availableAgents.filter((candidate) =>
+    (candidate.mode === "subagent" || candidate.mode === "all") &&
+    candidate.hidden !== true &&
+    candidate.deprecated !== true,
+  )
+  const fallbackNames = new Set(["general", "explore", "debug"])
+  for (const preferred of input.preferredAgents.filter((name) => !fallbackNames.has(name))) {
+    const match = eligible.find((candidate) => candidate.name.toLowerCase() === preferred.toLowerCase())
+    if (match) return match.name
+  }
+  const roleKeywords: Record<string, string[]> = {
+    architect: ["architect", "architecture", "design", "planner"],
+    implementer: ["implementer", "implementation", "developer", "coder"],
+    tester: ["tester", "testing", "test", "qa", "quality"],
+    reviewer: ["reviewer", "review", "audit"],
+  }
+  const keywords = roleKeywords[input.role] ?? [input.role.toLowerCase()]
+  const semanticMatch = eligible.find((candidate) =>
+    keywords.some((keyword) =>
+      [candidate.name, candidate.displayName ?? "", candidate.description ?? ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(keyword),
+    ),
+  )
+  const fallbackPreferred = input.preferredAgents
+    .map((preferred) => eligible.find((candidate) => candidate.name.toLowerCase() === preferred.toLowerCase()))
+    .find((candidate) => candidate !== undefined)
+  const fallback = semanticMatch ??
+    fallbackPreferred ??
+    eligible.find((candidate) => candidate.name === "general") ??
+    eligible.find((candidate) => candidate.name === "debug") ??
+    eligible[0]
+  if (!fallback) throw new Error("No visible subagent is available for objective-only swarm mode.")
+  return fallback.name
+}
+
 export const SwarmTool: Tool.Info<typeof Parameters> = {
   id: "swarm",
   init: () => Effect.succeed({
-    description: "Run multiple configured Kilo specialist agents concurrently as a durable team swarm. Workers share Kilo's persistent session board, communicate with peers, then independently cross-review each other's completed work with structured evidence before a worker can be marked accepted.",
+    description: "Run a durable team swarm with configured workers or an objective-only staged specialist plan. Workers coordinate on the session board and receive independent evidence-backed peer review before work is accepted.",
     parameters: Parameters,
     execute: (args, ctx) => Effect.gen(function* () {
-      if (args.workers.length === 0) return yield* Effect.fail(new Error("swarm requires at least one worker"))
-      if (args.workers.length > 12) return yield* Effect.fail(new Error("swarm supports at most 12 workers per invocation"))
-      if (args.workers.length < 2) return yield* Effect.fail(new Error("verified swarm mode requires at least two workers so work can be independently peer-reviewed"))
+       if (!args.objective.trim()) return yield* Effect.fail(new Error("swarm objective must not be empty"))
       const caller = yield* Agent.get(ctx.agent)
       const sessions = yield* Session.Service
       const parent = yield* sessions.get(ctx.sessionID as SessionID)
       const config = yield* Config.Service
       const flags = yield* RuntimeFlags.Service
       const cfg = yield* config.get()
+
+       let defaultTeamPlan: ReturnType<typeof DynamicAgentFactory.generateDefaultTeamPlanFromObjective> | undefined
+       let workers: Array<{ agent: string; role: string; prompt: string }>
+       if (args.workers === undefined) {
+         defaultTeamPlan = DynamicAgentFactory.generateDefaultTeamPlanFromObjective(args.objective)
+         const availableAgents = yield* Agent.list()
+         if (!availableAgents.some((candidate) =>
+           (candidate.mode === "subagent" || candidate.mode === "all") &&
+           candidate.hidden !== true &&
+           candidate.deprecated !== true,
+         )) {
+           return yield* Effect.fail(new Error("Objective-only swarm requires at least one visible configured subagent."))
+         }
+         workers = defaultTeamPlan.tasks.map((task) => ({
+           agent: selectAgentForRole({ role: task.role, preferredAgents: task.preferredAgents, availableAgents }),
+           role: task.role,
+           prompt: task.prompt,
+         }))
+       } else {
+         workers = args.workers
+       }
+       if (workers.length === 0) return yield* Effect.fail(new Error("swarm requires at least one worker"))
+       if (workers.length > 12) return yield* Effect.fail(new Error("swarm supports at most 12 workers per invocation"))
+       if (workers.length < 2) return yield* Effect.fail(new Error("verified swarm mode requires at least two workers so work can be independently peer-reviewed"))
       let boardEnabled = BoardEnabled.on(cfg, flags)
       let boardUnavailableReason: string | undefined
       let boardHistoryError: string | undefined
@@ -114,8 +179,8 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           boardUnavailableReason = Cause.pretty(permissionResult.cause)
         }
       }
-      const resolved = yield* Effect.forEach(args.workers, (worker) => Agent.get(worker.agent), { concurrency: "unbounded" })
-      for (const [index, subagent] of resolved.entries()) DynamicAgentFactory.plan({ parentID: parent.id, description: args.workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
+      const resolved = yield* Effect.forEach(workers, (worker) => Agent.get(worker.agent), { concurrency: "unbounded" })
+      for (const [index, subagent] of resolved.entries()) DynamicAgentFactory.plan({ parentID: parent.id, description: workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
       if (boardEnabled) {
         const boardInit = yield* Effect.exit(Effect.gen(function* () {
@@ -126,7 +191,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
             callID: base,
             to: "ALL",
             type: "INFO",
-            body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.`,
+            body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.`,
           })
         }))
         if (boardInit._tag === "Failure") {
@@ -135,23 +200,85 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           boardUnavailableReason = Cause.pretty(boardInit.cause)
         }
       }
-      const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
-      const planned = args.workers.map((worker, index) => ({
+      const workerLimit = args.maxWorkers ?? defaultTeamPlan?.execution.maxWorkers ?? workers.length
+       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: workerLimit })
+      const planned = workers.map((worker, index) => ({
         swarmId, parentSessionId: parent.id, description: worker.role,
         prompt: [`Shared objective: ${args.objective}`, `Role: ${worker.role}`, `Task: ${worker.prompt}`, "", "TEAM COORDINATION PROTOCOL:", "Inspect the shared agent board before substantive work when available.", "Post concise discoveries, blockers, questions, and verified findings so peers can build on your work.", "If another worker has already solved part of your task, build on that evidence instead of duplicating it. If you disagree, post the contradiction and supporting evidence.", "Before finishing, post your strongest evidence-backed result and every remaining uncertainty to the shared board when board_post is available; always return a final handoff in your task result."].join("\n"),
         caller, subagent: resolved[index], actor: ctx.agent, corrId: `${base}_${index}` as any,
         boardEnabled,
+         ...(defaultTeamPlan?.tasks[index]?.readOnly ? { readOnly: true } : {}),
       }))
-      const batch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: planned, concurrency: args.maxWorkers ?? args.workers.length })
+      
+       let batch: {
+         completed: Array<{ index: number; result: SwarmRuntime.PlannedResult }>
+         failed: Array<{ index: number; error: unknown }>
+       }
+       if (defaultTeamPlan) {
+         const stagedCompleted: Array<{ index: number; result: SwarmRuntime.PlannedResult }> = []
+         const stagedFailed: Array<{ index: number; error: unknown }> = []
+         const stageFindings = new Map<string, string>()
+         let blockedBy: string | undefined
+         for (const [index, task] of defaultTeamPlan.tasks.entries()) {
+           if (blockedBy) {
+             stagedFailed.push({
+               index,
+               error: new Error("Blocked because prerequisite task " + blockedBy + " failed; dependent work was not executed."),
+             })
+             continue
+           }
+           const missingDependency = task.dependsOn.find((dependency) => !stageFindings.has(dependency))
+           if (missingDependency) {
+             stagedFailed.push({
+               index,
+               error: new Error("Blocked because prerequisite task " + missingDependency + " has no completed handoff."),
+             })
+             blockedBy = missingDependency
+             continue
+           }
+           const dependencyContext = task.dependsOn
+             .map((dependency) => "Prerequisite " + dependency + " output:\n" + (stageFindings.get(dependency) ?? "No handoff was persisted."))
+             .join("\n\n")
+           const stageBatch = yield* SwarmRuntime.runPlannedBatchSettled({
+             workers: [{
+               ...planned[index]!,
+               prompt: [
+                 planned[index]!.prompt,
+                 "STAGED EXECUTION: respect the declared task dependencies; do not act as though a prerequisite succeeded unless its handoff appears below.",
+                 "Current stage: " + task.id + " — " + task.title,
+                 "Prerequisites: " + (task.dependsOn.join(", ") || "none"),
+                 dependencyContext ? "PREREQUISITE HANDOFFS:\n" + dependencyContext : "No prerequisite handoff is required for this stage.",
+               ].join("\n\n"),
+             }],
+             concurrency: 1,
+           })
+           if (stageBatch.completed[0]) {
+             const result = stageBatch.completed[0].result
+             stagedCompleted.push({ index, result })
+             const transcript = yield* MessageV2.stream(result.sessionId as SessionID)
+             stageFindings.set(task.id, finding(transcript).slice(0, 6000) || "The stage completed without a persisted textual handoff.")
+           }
+           if (stageBatch.failed[0]) {
+             stagedFailed.push({ index, error: stageBatch.failed[0].error })
+             blockedBy = task.id
+           } else if (!stageBatch.completed[0]) {
+             stagedFailed.push({ index, error: new Error("The stage returned no completed result.") })
+             blockedBy = task.id
+           }
+         }
+         batch = { completed: stagedCompleted, failed: stagedFailed }
+       } else {
+         batch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: planned, concurrency: args.maxWorkers ?? workers.length })
+       }
       const reports = yield* Effect.forEach(batch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
-      const entries = batch.completed.map((entry, reportIndex) => ({ index: entry.index, role: args.workers[entry.index]?.role ?? entry.result.agent, taskId: entry.result.taskId, sessionId: entry.result.sessionId, durationMs: entry.result.durationMs, finding: finding(reports[reportIndex] ?? []) }))
+      const entries = batch.completed.map((entry, reportIndex) => ({ index: entry.index, role: workers[entry.index]?.role ?? entry.result.agent, taskId: entry.result.taskId, sessionId: entry.result.sessionId, durationMs: entry.result.durationMs, finding: finding(reports[reportIndex] ?? []) }))
       // If fewer than two workers finish, no independent peer exists. Leave every
       // output unaccepted instead of allowing the sole survivor to review itself.
       const reviewerPlans = entries.length < 2 ? [] : entries.map((entry, reviewIndex) => {
         const reviewerIndex = entries[(reviewIndex + 1) % entries.length].index
         return {
           swarmId, parentSessionId: parent.id, description: `Peer reviewer for ${entry.role}`,
-          prompt: [`You are the independent peer reviewer for worker ${entry.role}.`, `Swarm objective: ${args.objective}`, `Worker task: ${args.workers[entry.index]?.prompt ?? "unknown"}`, `Target worker session: ${entry.sessionId}`, "", "WORKER FINDING TO VERIFY:", entry.finding, "", "TEAM COORDINATION:", "Read relevant shared-board updates if board_read is available. Compare peer discoveries and blockers rather than reviewing in isolation. When a material finding, contradiction, or blocker affects the worker, post a concise evidence-backed RESULT, ASK, or HOLD to the target worker session using board_post if available. Board messages are advisory and never substitute for structured review or host-verified evidence.", "", "REVIEW RULES:", "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.", "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.", "Run an appropriate test or validation command yourself. A PASS requires a Kilo-recorded successful shell execution with exitCode 0; the evidence.reference must exactly match the command you actually ran. Never invent command results. Link evidence to every passed criterion.", "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}", `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`].join("\n"),
+          prompt: [`You are the independent peer reviewer for worker ${entry.role}.`, `Swarm objective: ${args.objective}`, `Worker task: ${workers[entry.index]?.prompt ?? "unknown"}`, `Target worker session: ${entry.sessionId}`, "", "WORKER FINDING TO VERIFY:", entry.finding, "", "TEAM COORDINATION:", "Read relevant shared-board updates if board_read is available. Compare peer discoveries and blockers rather than reviewing in isolation. When a material finding, contradiction, or blocker affects the worker, post a concise evidence-backed RESULT, ASK, or HOLD to the target worker session using board_post if available. Board messages are advisory and never substitute for structured review or host-verified evidence.", "", "REVIEW RULES:", "Do not edit or modify the worker's implementation. Inspect repository state, tests, commands, logs, and artifacts as needed.", "Challenge the finding rather than agreeing by default. Look for missing requirements, unsupported claims, regressions, and contradictions with peer evidence.", "Run an appropriate test or validation command yourself. A PASS requires a Kilo-recorded successful shell execution with exitCode 0; the evidence.reference must exactly match the command you actually ran. Never invent command results. Link evidence to every passed criterion.", "Return ONLY JSON matching this exact shape: {\"verdict\":\"pass|fail|inconclusive\",\"summary\":\"...\",\"checks\":[{\"criterion\":\"...\",\"verdict\":\"pass|fail|inconclusive\",\"evidenceIds\":[\"e1\"]}],\"evidence\":[{\"id\":\"e1\",\"kind\":\"test|command|file|diff|log|artifact\",\"reference\":\"...\",\"detail\":\"...\",\"result\":\"pass|fail|observed\",\"exitCode\":0}],\"blockingFindings\":[],\"uncertainties\":[]}", `You are reviewer ${reviewIndex + 1}; do not certify your own worker session.`].join("\n"),
           caller, subagent: resolved[reviewerIndex], actor: ctx.agent, corrId: `${base}_review_${reviewIndex}` as any, readOnly: true,
           boardEnabled,
           // Reviewer tasks qualify worker tasks through durable review events; they
@@ -159,7 +286,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           parentTaskId: null,
         }
       })
-      const reviewBatch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: reviewerPlans, concurrency: Math.min(args.workers.length, args.maxWorkers ?? args.workers.length) })
+      const reviewBatch = yield* SwarmRuntime.runPlannedBatchSettled({ workers: reviewerPlans, concurrency: Math.min(workers.length, args.maxWorkers ?? workers.length) })
       const reviewMessages = yield* Effect.forEach(reviewBatch.completed, (entry) => MessageV2.stream(entry.result.sessionId as SessionID), { concurrency: "unbounded" })
       const reviews = yield* Effect.forEach(reviewBatch.completed, (reviewEntry) => Effect.gen(function* () {
         // completed[] is compacted when a reviewer fails; use the original reviewer-plan
@@ -364,7 +491,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           }))
         : { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
       const communications = boardHistory.messages
-      const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
+      const failures = batch.failed.map((entry) => ({ role: workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
       const reviewerFailures = reviewBatch.failed.map((entry) => ({
         role: entries[entry.index]?.role ?? "reviewer",
         targetRole: entries[entry.index]?.role ?? "unknown worker",
@@ -377,9 +504,9 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       }))
       const accepted = reviews.filter((review) => review.accepted).length
       return {
-        title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
+        title: `Swarm completed ${entries.length}/${workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
-          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length + unavailablePeerAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length + unavailablePeerAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}${boardHistory.truncated ? ` (latest messages shown; ${boardHistory.scanned} observed)` : ""}`,
+          `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length + unavailablePeerAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length + unavailablePeerAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}${boardHistory.truncated ? ` (latest messages shown; ${boardHistory.scanned} observed)` : ""}`,
           ...(boardUnavailableReason ? [`Shared-board coordination unavailable: ${boardUnavailableReason.slice(0, 500)}`] : []),
           ...(boardHistoryError ? [`Shared-board history read failed: ${boardHistoryError.slice(0, 500)}`] : []),
           ...entries.flatMap((entry, index) => {
