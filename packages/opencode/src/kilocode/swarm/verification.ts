@@ -124,7 +124,7 @@ export namespace SwarmVerification {
       executions.some((execution) =>
         execution.sourceSessionId === reviewerSessionId &&
         execution.exitCode === 0 &&
-        normalizeCommand(execution.command) === normalizeCommand(item.reference)))
+        execution.command === item.reference)
     if (!passingExecution) result.push("no passing test/validation command matched to host-recorded reviewer execution evidence")
     return [...new Set(result)]
   }
