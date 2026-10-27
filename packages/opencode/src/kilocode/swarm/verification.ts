@@ -364,6 +364,21 @@ export namespace SwarmVerification {
       return yield* Effect.fail(new InvalidReview({ message: "reviewer session is not the current durable session bound to the reviewer task fence" }))
     }
 
+    // A reviewer task is a single-use audit identity. Reusing it for a second
+    // target would make independence/provenance ambiguous and can race with the
+    // reviewer task's terminal reviewed transition.
+    const priorReview = yield* db
+      .get<{ aggregate_id: string; type: string }>(sql`
+        SELECT aggregate_id, type FROM event
+        WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+          AND json_extract(data, '$.reviewerTaskId') = ${input.reviewerTaskId}
+        LIMIT 1
+      `)
+      .pipe(Effect.orDie)
+    if (priorReview) {
+      return yield* Effect.fail(new InvalidReview({ message: `reviewer task ${input.reviewerTaskId} already recorded a review for ${priorReview.aggregate_id}` }))
+    }
+
     const executions = Schema.decodeUnknownSync(Schema.Array(VerifiedExecutionSchema))(input.executedCommands)
     const invalidExecution = executions.find((execution) =>
       !execution.command.trim() ||
@@ -405,6 +420,17 @@ export namespace SwarmVerification {
         const currentReviewerBinding = yield* db
           .get<{ session_id: string; swarm_id: string; fence: number; state: string }>(sql`SELECT session_id, swarm_id, fence, state FROM kilo_swarm_worker_binding WHERE task_id = ${input.reviewerTaskId}`)
           .pipe(Effect.orDie)
+        const priorReview = yield* db
+          .get<{ aggregate_id: string }>(sql`
+            SELECT aggregate_id FROM event
+            WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+              AND json_extract(data, '$.reviewerTaskId') = ${input.reviewerTaskId}
+            LIMIT 1
+          `)
+          .pipe(Effect.orDie)
+        if (priorReview) {
+          return yield* Effect.die(new InvalidReview({ message: `reviewer task ${input.reviewerTaskId} was concurrently used to review ${priorReview.aggregate_id}` }))
+        }
         if (
           !currentTarget ||
           !currentReviewer ||
