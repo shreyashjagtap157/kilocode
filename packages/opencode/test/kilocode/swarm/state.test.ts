@@ -776,6 +776,14 @@ describe("swarm state (M2)", () => {
           },
         })
         expect(review.accepted).toBe(true)
+        expect(review.executionEvidenceProblems).toEqual([])
+        expect(review.executionEvidence).toHaveLength(1)
+        expect(review.executionEvidence[0]).toMatchObject({
+          command: "bun test test/kilocode/swarm/state.test.ts",
+          exitCode: 0,
+          sourceSessionId: "ses_independent_reviewer",
+        })
+        expect(review.executionEvidence[0]?.outputSha256).toBe(createHash("sha256").update("tests passed").digest("hex"))
         // Complete the review job first. The target may still be accepted because
         // its durable review event records the now-terminal independent reviewer.
         const reviewerCompletion = yield* SwarmState.transition({
@@ -971,6 +979,8 @@ describe("swarm state (M2)", () => {
         })
         expect(recorded.verdict).toBe("inconclusive")
         expect(recorded.accepted).toBe(false)
+        expect(recorded.executionEvidence).toEqual([])
+        expect(recorded.executionEvidenceProblems).toContain("review contains no host-recorded validation execution")
         const attempt = yield* Effect.exit(SwarmState.transition({
           taskId, to: "accepted", expectedVersion: targetVersion, actor: "act_test", corrId: "cor_evidence_accept" as any,
         }))
