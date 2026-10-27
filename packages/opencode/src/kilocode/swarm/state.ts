@@ -336,7 +336,6 @@ export namespace SwarmState {
         FROM event
         WHERE (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
           AND json_extract(data, '$.reviewerTaskId') = ${taskId}
-          AND json_extract(data, '$.swarmId') = ${swarmId}
       `).pipe(Effect.orDie)
       if (!reviewCount || reviewCount.count !== 1) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} must have exactly one durable review result` }))
