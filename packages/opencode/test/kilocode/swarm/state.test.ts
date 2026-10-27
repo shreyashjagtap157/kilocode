@@ -1430,7 +1430,7 @@ describe("swarm state (M2)", () => {
   })
 
 
-  test("acceptance gate refuses a passing review until the reviewer task is terminally reviewed", async () => {
+  test("acceptance gate uses durable evidence after the reviewer closes and its binding expires", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)
     await use(
@@ -1494,6 +1494,15 @@ describe("swarm state (M2)", () => {
         })
         const reviewer = yield* SwarmState.getTask(reviewerTaskId)
         expect(reviewer.state).toBe("reviewed")
+
+        // Recovery may expire a completed reviewer's lease binding after restart.
+        // The durable review event and exact session/fence provenance must still
+        // qualify the target; the expired binding must never be executable again.
+        yield* db.run(sql`
+          UPDATE kilo_swarm_worker_binding
+          SET state = 'expired', time_updated = ${Date.now()}
+          WHERE task_id = ${reviewerTaskId}
+        `).pipe(Effect.orDie)
 
         const accepted = yield* SwarmState.transition({
           taskId,
