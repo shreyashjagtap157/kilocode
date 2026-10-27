@@ -110,6 +110,23 @@ const shellDeniedPrefixes = [
   "git show *--ext-diff*",
   "git show --textconv*",
   "git show *--textconv*",
+  // diff, show, and log can write their output to a file.
+  // Broad read-only command patterns must not permit these write-capable flags.
+  "git diff --output*",
+  "git diff *--output*",
+  "git diff -o *",
+  "git diff * -o *",
+  "git show --output*",
+  "git show *--output*",
+  "git show -o *",
+  "git show * -o *",
+  "git log --output*",
+  "git log *--output*",
+  "git log -o *",
+  "git log * -o *",
+  // git grep can open results in an arbitrary pager command.
+  "git grep --open-files-in-pager*",
+  "git grep *--open-files-in-pager*",
 ] as const
 
 /**
