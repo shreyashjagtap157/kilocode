@@ -87,7 +87,7 @@ describe("swarm core schemas", () => {
   })
 
   test("AC2: invariant (1) — one state field and a declarative lifecycle table", () => {
-    expect(Object.keys(Swarm.Lifecycle).length).toBe(14)
+    expect(Object.keys(Swarm.Lifecycle).length).toBe(15)
     for (const [from, targets] of Object.entries(Swarm.Lifecycle)) {
       expect(Schema.is(Swarm.TaskState)(from)).toBe(true)
       for (const to of targets) expect(Schema.is(Swarm.TaskState)(to)).toBe(true)
