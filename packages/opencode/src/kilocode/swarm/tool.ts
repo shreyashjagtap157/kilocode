@@ -2,6 +2,9 @@ import { Cause, Effect, Schema } from "effect"
 import { createHash } from "node:crypto"
 import * as Tool from "@/tool/tool"
 import { Agent } from "@/agent/agent"
+import { Config } from "@/config/config"
+import { RuntimeFlags } from "@/effect/runtime-flags"
+import { BoardEnabled } from "@/kilocode/board/enabled"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import * as MessageV2 from "@/session/message-v2"
@@ -89,11 +92,23 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const caller = yield* Agent.get(ctx.agent)
       const sessions = yield* Session.Service
       const parent = yield* sessions.get(ctx.sessionID as SessionID)
+      const config = yield* Config.Service
+      const flags = yield* RuntimeFlags.Service
+      const cfg = yield* config.get()
+      const boardEnabled = BoardEnabled.on(cfg, flags)
+      // Internal BoardStore calls obey the same feature setting and permissions
+      // as public board_read / board_post tools; the swarm tool cannot bypass them.
+      if (boardEnabled) {
+        yield* ctx.ask({ permission: "board_read", patterns: ["*"], always: ["*"], metadata: {} })
+        yield* ctx.ask({ permission: "board_post", patterns: ["*"], always: ["*"], metadata: {} })
+      }
       const resolved = yield* Effect.forEach(args.workers, (worker) => Agent.get(worker.agent), { concurrency: "unbounded" })
       for (const [index, subagent] of resolved.entries()) DynamicAgentFactory.plan({ parentID: parent.id, description: args.workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
-      yield* BoardStore.scope(parent.id as SessionID)
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
-      yield* BoardStore.post({ sessionID: parent.id as SessionID, messageID: `${base}_objective`, callID: base, to: "ALL", type: "INFO", body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.` })
+      if (boardEnabled) {
+        yield* BoardStore.scope(parent.id as SessionID)
+        yield* BoardStore.post({ sessionID: parent.id as SessionID, messageID: ${base}_objective`, callID: base, to: "ALL", type: "INFO", body: `SWARM OBJECTIVE: ${args.objective}` + `\nWorkers: ${args.workers.map((worker) => ${worker.role} (${worker.agent})`).join(", ")}` + `\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.` })
+      }
       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
       const planned = args.workers.map((worker, index) => ({
         swarmId, parentSessionId: parent.id, description: worker.role,
@@ -207,7 +222,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       // Persist the qualification result on the shared board so a worker can
       // discover peer-review findings later; the board is advisory, while the
       // durable task gate remains the sole authority for acceptance.
-      const reviewAnnouncements = yield* Effect.forEach(reviews, (review) => Effect.gen(function* () {
+      const reviewAnnouncements = yield* Effect.forEach(boardEnabled ? reviews : [], (review) => Effect.gen(function* () {
         const target = entries.find((entry) => entry.taskId === review.workerTaskId)
         if (!target) return { taskId: review.workerTaskId, posted: false }
         const checks = Array.isArray(review.checks) ? review.checks as Array<{ criterion?: string; verdict?: string; evidenceIds?: string[] }> : []
@@ -238,7 +253,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         )
         return { taskId: target.taskId, posted }
       }), { concurrency: "unbounded" })
-      const reviewerFailureAnnouncements = yield* Effect.forEach(reviewBatch.failed, (entry) => Effect.gen(function* () {
+      const reviewerFailureAnnouncements = yield* Effect.forEach(boardEnabled ? reviewBatch.failed : [], (entry) => Effect.gen(function* () {
         const target = entries[entry.index]
         if (!target) return { workerTaskId: undefined, reviewerTaskId: undefined, posted: false }
         const body = [
@@ -265,7 +280,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       // A single surviving worker has no independent peer to review it. Explicitly
       // notify that worker rather than leaving it with a stale impression of completion.
       const unavailablePeerAnnouncements = yield* Effect.forEach(
-        entries.length < 2 ? entries.filter((entry) => !reviews.some((review) => review.workerTaskId === entry.taskId)) : [],
+        boardEnabled && entries.length < 2 ? entries.filter((entry) => !reviews.some((review) => review.workerTaskId === entry.taskId)) : [],
         (target) => Effect.gen(function* () {
           const body = [
             "Independent peer review: UNAVAILABLE",
@@ -287,8 +302,11 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         }),
         { concurrency: "unbounded" },
       )
-      const board = yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 100 })
-      const communications = board.messages.filter((message) => message.from !== "main").map((message) => ({ from: message.fromLabel ?? message.from, to: message.toLabel ?? message.to, type: message.type, body: message.body, id: message.id }))
+      const communications = boardEnabled
+        ? (yield* BoardStore.read({ sessionID: parent.id as SessionID, limit: 100 })).messages
+            .filter((message) => message.from !== "main")
+            .map((message) => ({ from: message.fromLabel ?? message.from, to: message.toLabel ?? message.to, type: message.type, body: message.body, id: message.id }))
+        : []
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
       const reviewerFailures = reviewBatch.failed.map((entry) => ({
         role: entries[entry.index]?.role ?? "reviewer",
