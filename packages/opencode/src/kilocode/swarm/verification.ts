@@ -140,8 +140,9 @@ export namespace SwarmVerification {
    */
   function shellSegments(command: string) {
     const segments: string[] = []
+    const operators: string[] = []
     let current = ""
-    let quote: string | undefined
+    let quote: "'" | '"' | undefined
     let escaped = false
     for (let i = 0; i < command.length; i++) {
       const char = command[i]!
@@ -156,31 +157,43 @@ export namespace SwarmVerification {
         continue
       }
       if (quote) {
+        // Command substitution remains active inside double quotes in POSIX shells.
+        // Reject it conservatively instead of treating quoted metacharacters as inert.
+        if (quote === '"' && ((char === "$" && command[i + 1] === "(") || char.codePointAt(0) === 96)) {
+          operators.push("substitution")
+        }
         current += char
         if (char === quote) quote = undefined
         continue
       }
-      if (char === "'" || char === '"' || char.codePointAt(0) === 96) {
+      if (char === "'" || char === '"') {
         quote = char
         current += char
         continue
       }
-      if (char === ";" || char === "\n" || char === "|") {
-        if (current.trim()) segments.push(current.trim())
-        current = ""
-        if (char === "|" && command[i + 1] === "|") i++
+      if (char.codePointAt(0) === 96 || (char === "$" && command[i + 1] === "(")) {
+        operators.push("substitution")
+        current += char
         continue
       }
-      if (char === "&" && command[i + 1] === "&") {
+      if (char === ";" || char === "\n" || char === "|" || char === "<" || char === ">" || char === "&") {
+        let operator = char
+        if ((char === "&" && command[i + 1] === "&") ||
+            (char === "|" && command[i + 1] === "|") ||
+            (char === ">" && command[i + 1] === ">") ||
+            (char === "<" && command[i + 1] === "<")) {
+          operator += command[i + 1]!
+          i++
+        }
+        operators.push(operator)
         if (current.trim()) segments.push(current.trim())
         current = ""
-        i++
         continue
       }
       current += char
     }
     if (current.trim()) segments.push(current.trim())
-    return segments
+    return { segments, operators }
   }
 
   const validationCommand = [
@@ -212,13 +225,15 @@ export namespace SwarmVerification {
    * pipelines, fallbacks, and post-validation commands remain disallowed.
    */
   export const isValidationCommand = (command: string) => {
-    const segments = shellSegments(command)
-    if (segments.length === 1) return isKnownValidationInvocation(segments[0]!)
-    if (segments.length !== 2) return false
-    // shellSegments intentionally treats &&, ||, and | as separators; inspect
-    // the original command too so only && (not fallback or pipeline) is allowed.
-    const safePrefix = /^cd\s+(?:"[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*([\s\S]+)$/i.exec(command)
-    return safePrefix !== null && isKnownValidationInvocation(segments[1]!)
+    const parsed = shellSegments(command)
+    if (parsed.operators.length === 0) return isKnownValidationInvocation(command)
+    if (parsed.operators.length !== 1 || parsed.operators[0] !== "&&" || parsed.segments.length !== 2) return false
+
+    // Permit only the safe common prefix cd <directory> && <validator>. The test's
+    // exit code remains the shell result because the validator runs only if cd succeeds.
+    // Any redirection, backgrounding, pipeline, fallback, or command substitution fails closed.
+    const safePrefix = /^cd\s+(?:"[^"]+"|'[^']+'|[^\s;&|<>]+)\s*&&\s*([\s\S]+)$/i.exec(command)
+    return safePrefix !== null && isKnownValidationInvocation(parsed.segments[1]!)
   }
 
   /**
