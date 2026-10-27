@@ -55,11 +55,18 @@ export function collect<E, R>(
     const collected: Message[] = []
     while (hasMore && pages < maxPages) {
       const page = yield* readPage(cursor)
-      collected.push(...page.messages)
       pages += 1
+      // Never append a page whose cursor repeats or loops back: its rows may be
+      // replayed from an earlier page and would duplicate team evidence.
+      if (cursor !== undefined && (!page.cursor || page.cursor === cursor || seenCursors.has(page.cursor))) {
+        if (page.hasMore || page.messages.length > 0) truncated = true
+        hasMore = false
+        break
+      }
+      collected.push(...page.messages)
       hasMore = page.hasMore
       if (!hasMore) break
-      if (!page.cursor || page.cursor === cursor || seenCursors.has(page.cursor)) {
+      if (!page.cursor) {
         truncated = true
         break
       }
