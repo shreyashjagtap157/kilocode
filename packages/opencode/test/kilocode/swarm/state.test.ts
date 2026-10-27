@@ -1369,6 +1369,41 @@ describe("swarm state (M2)", () => {
             AND (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
         `)
         expect(secondReviewEvents?.count).toBe(0)
+
+        // A caller that bypasses recordReview must not reuse the already-consumed
+        // reviewer task by publishing a second structurally plausible PASS directly.
+        yield* SwarmState.transition({
+          taskId: reviewerTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerVersion,
+          actor: "act_test",
+          corrId: "cor_single_use_close" as any,
+        })
+        const events = yield* EventV2.Service
+        yield* events.publish(SwarmTaskReviewPassed, {
+          taskId: secondTargetId as any,
+          swarmId,
+          reviewerTaskId: reviewerTaskId as any,
+          reviewerSessionId,
+          reviewerAgent: "reviewer",
+          verdict: "pass",
+          summary: report.summary,
+          evidenceJson: JSON.stringify(report.evidence),
+          executionEvidenceJson: JSON.stringify([verifiedCommand(command, reviewerSessionId)]),
+          checksJson: JSON.stringify(report.checks),
+          blockingFindingsJson: JSON.stringify(report.blockingFindings),
+          uncertaintiesJson: JSON.stringify(report.uncertainties),
+          corrId: "cor_single_use_direct_publish" as any,
+        })
+        const forgedAcceptance = yield* Effect.exit(SwarmState.transition({
+          taskId: secondTargetId,
+          to: "accepted",
+          expectedVersion: secondVersion,
+          actor: "act_test",
+          corrId: "cor_single_use_forged_accept" as any,
+        }))
+        expect(forgedAcceptance._tag).toBe("Failure")
+        expect((yield* SwarmState.getTask(secondTargetId)).state).toBe("reviewing")
       }),
       file,
     )
