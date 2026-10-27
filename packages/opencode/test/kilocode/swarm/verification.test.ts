@@ -42,6 +42,13 @@ describe("SwarmVerification command evidence", () => {
       "cd packages/opencode && bun test test/kilocode/swarm/state.test.ts; echo done",
       "cd packages/opencode || bun test test/kilocode/swarm/state.test.ts",
       "bun test test/kilocode/swarm/state.test.ts; echo done",
+      "bun test test/kilocode/swarm/state.test.ts & echo done",
+      "bun test test/kilocode/swarm/state.test.ts > test.log",
+      "bun test test/kilocode/swarm/state.test.ts < input.sh",
+      "bun test $(touch /tmp/swarm-evidence-bypass)",
+      'bun test "$(touch /tmp/swarm-evidence-bypass)"',
+      'bun test `touch /tmp/swarm-evidence-bypass`',
+      "cd packages/opencode && bun test test/kilocode/swarm/state.test.ts > test.log",
       'echo "&& bun test"',
     ]
     for (const command of invalid) {
