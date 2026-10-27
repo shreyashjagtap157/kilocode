@@ -938,6 +938,16 @@
       "type": "integer",
       "notNull": true,
       "autoincrement": false,
+      "default": "1",
+      "generated": null,
+      "name": "required_reviews",
+      "entityType": "columns",
+      "table": "kilo_swarm"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
       "default": null,
       "generated": null,
       "name": "time_created",
