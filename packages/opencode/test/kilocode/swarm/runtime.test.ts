@@ -83,6 +83,26 @@ const use = (
 }
 
 describe("SwarmRuntime planned worker path (M3)", () => {
+  test("disables shared-board tools in child prompts when advisory coordination is unavailable", () => {
+    const unavailable = SwarmRuntime.promptTools({ canTask: true, canTodo: true, boardEnabled: false })
+    expect(unavailable.board_read).toBe(false)
+    expect(unavailable.board_post).toBe(false)
+    expect(unavailable.question).toBe(false)
+    expect(unavailable.task).toBeUndefined()
+    expect(unavailable.todowrite).toBeUndefined()
+
+    const enabled = SwarmRuntime.promptTools({ canTask: false, canTodo: false, boardEnabled: true })
+    expect(enabled.board_read).toBeUndefined()
+    expect(enabled.board_post).toBeUndefined()
+    expect(enabled.task).toBe(false)
+    expect(enabled.todowrite).toBe(false)
+
+    // An omitted flag preserves legacy/non-swarm planned execution behavior.
+    const inherited = SwarmRuntime.promptTools({ canTask: true, canTodo: true })
+    expect(inherited.board_read).toBeUndefined()
+    expect(inherited.board_post).toBeUndefined()
+  })
+
   test("creates a child session with the resolved worker model and executes it through durable swarm admission", async () => {
     await using tmp = await tmpdir()
     let created: any
