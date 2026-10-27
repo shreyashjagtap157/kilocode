@@ -135,7 +135,18 @@ export namespace SwarmRuntime {
     if (input.workers.length > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `worker count cannot exceed ${MAX_WORKERS}` }))
     const concurrency = input.concurrency ?? input.workers.length
     if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > MAX_WORKERS) return yield* Effect.fail(new InvalidInput({ message: `batch concurrency must be between 1 and ${MAX_WORKERS}` }))
-    const outcomes = yield* Effect.forEach(input.workers, (worker) => Effect.either(runPlanned(worker)), { concurrency })
+    // Preserve successful siblings when a worker fails through either the typed
+    // error channel or a defect. catchDefect does not swallow interruption, so a
+    // caller cancellation still interrupts the batch instead of being reported as
+    // ordinary worker failure.
+    const outcomes = yield* Effect.forEach(
+      input.workers,
+      (worker) =>
+        Effect.either(runPlanned(worker)).pipe(
+          Effect.catchDefect((defect) => Effect.succeed({ _tag: "Left" as const, left: defect })),
+        ),
+      { concurrency },
+    )
     const completed: Array<{ index: number; result: PlannedResult }> = []
     const failed: Array<{ index: number; error: unknown }> = []
     outcomes.forEach((outcome, index) => outcome._tag === "Right" ? completed.push({ index, result: outcome.right }) : failed.push({ index, error: outcome.left }))
