@@ -141,7 +141,7 @@ export namespace SwarmVerification {
   function shellSegments(command: string) {
     const segments: string[] = []
     let current = ""
-    let quote: "'" | '"' | "\`" | undefined
+    let quote: string | undefined
     let escaped = false
     for (let i = 0; i < command.length; i++) {
       const char = command[i]!
@@ -160,7 +160,7 @@ export namespace SwarmVerification {
         if (char === quote) quote = undefined
         continue
       }
-      if (char === "'" || char === '"' || char === "\`") {
+      if (char === "'" || char === '"' || char.codePointAt(0) === 96) {
         quote = char
         current += char
         continue
