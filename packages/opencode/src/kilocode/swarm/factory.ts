@@ -311,7 +311,7 @@ export function generateDefaultTeamPlanFromObjective(objective: string): Default
     acceptanceCriteria: [
       "The implementation satisfies the stated objective and repository conventions.",
       "Focused automated tests and available static checks are run, with exact outcomes reported.",
-      "A separate read-only review checks the implementation and does not invent validation evidence.",
+      "Two separate read-only reviews check the implementation and do not invent validation evidence.",
       "No task is treated as accepted solely because an agent reports success; the existing durable evidence gate remains authoritative.",
     ],
     assumptions: [
