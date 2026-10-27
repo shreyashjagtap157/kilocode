@@ -19,6 +19,8 @@ describe("SwarmVerification command evidence", () => {
       "deno test",
       "Invoke-Pester",
       "CI=1 bun run typecheck",
+      "cd packages/opencode && bun test test/kilocode/swarm/state.test.ts",
+      'cd "packages/opencode" && bun run test:swarm',
     ]
     for (const command of valid) {
       expect(SwarmVerification.isValidationCommand(command), command).toBe(true)
@@ -36,6 +38,9 @@ describe("SwarmVerification command evidence", () => {
       "echo check",
       "sleep 1; printf 'validation passed'",
       "true || bun test test/kilocode/swarm/state.test.ts",
+      "echo hello && bun test test/kilocode/swarm/state.test.ts",
+      "cd packages/opencode && bun test test/kilocode/swarm/state.test.ts; echo done",
+      "cd packages/opencode || bun test test/kilocode/swarm/state.test.ts",
       "bun test test/kilocode/swarm/state.test.ts; echo done",
       'echo "&& bun test"',
     ]
