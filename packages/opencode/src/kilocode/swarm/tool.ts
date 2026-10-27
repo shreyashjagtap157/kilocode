@@ -255,9 +255,22 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
            })
            if (stageBatch.completed[0]) {
              const result = stageBatch.completed[0].result
-             stagedCompleted.push({ index, result })
              const transcript = yield* MessageV2.stream(result.sessionId as SessionID)
-             stageFindings.set(task.id, finding(transcript).slice(0, 6000) || "The stage completed without a persisted textual handoff.")
+             const handoff = finding(transcript).trim()
+             if (
+               !handoff ||
+               handoff === "No assistant finding was persisted." ||
+               handoff === "No textual assistant finding was persisted."
+             ) {
+               stagedFailed.push({
+                 index,
+                 error: new Error("The stage completed without a usable textual handoff; dependent tasks were not executed."),
+               })
+               blockedBy = task.id
+             } else {
+               stagedCompleted.push({ index, result })
+               stageFindings.set(task.id, handoff.slice(0, 6000))
+             }
            }
            if (stageBatch.failed[0]) {
              stagedFailed.push({ index, error: stageBatch.failed[0].error })
