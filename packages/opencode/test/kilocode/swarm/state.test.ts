@@ -1104,19 +1104,28 @@ describe("swarm state (M2)", () => {
         const swarmId = yield* SwarmState.createSwarm()
         const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_latest_target" as any })
         const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_latest_reviewer" as any })
+        const blockedReviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_latest_blocked_reviewer" as any })
         let targetVersion = 0
         let reviewerVersion = 0
+        let blockedReviewerVersion = 0
         for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
           yield* SwarmState.transition({ taskId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_latest_target" as any })
           targetVersion += 1
           yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_latest_reviewer" as any })
           reviewerVersion += 1
+          yield* SwarmState.transition({ taskId: blockedReviewerTaskId, to, expectedVersion: blockedReviewerVersion, actor: "act_test", corrId: "cor_latest_blocked_reviewer" as any })
+          blockedReviewerVersion += 1
         }
         const { db } = yield* Database.Service
         yield* db.run(sql`
           INSERT INTO kilo_swarm_worker_binding
             (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
           VALUES (${reviewerTaskId}, ${swarmId}, ${"ses_latest_reviewer"}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${blockedReviewerTaskId}, ${swarmId}, ${"ses_latest_blocker"}, ${"owner_test"}, ${"lease_test_blocker"}, 0, 'bound', ${Date.now()}, ${Date.now()})
         `).pipe(Effect.orDie)
         yield* seedHostCommandPart(db, {
           sessionId: "ses_latest_reviewer",
@@ -1141,9 +1150,9 @@ describe("swarm state (M2)", () => {
         expect(passed.accepted).toBe(true)
         const blocked = yield* SwarmVerification.recordReview({
           taskId,
-          reviewerTaskId,
-          reviewerSessionId: "ses_latest_reviewer",
-          reviewerAgent: "reviewer",
+          reviewerTaskId: blockedReviewerTaskId,
+          reviewerSessionId: "ses_latest_blocker",
+          reviewerAgent: "reviewer-2",
           corrId: "cor_latest_blocked" as any,
           report: {
             verdict: "fail",
