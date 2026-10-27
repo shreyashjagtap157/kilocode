@@ -1305,4 +1305,73 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("a reviewer task cannot audit more than one target", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const firstTargetId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_single_use_target_1" as any })
+        const secondTargetId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_single_use_target_2" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_single_use_reviewer" as any })
+        let firstVersion = 0
+        let secondVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId: firstTargetId, to, expectedVersion: firstVersion, actor: "act_test", corrId: "cor_single_use_target_1" as any })
+          firstVersion += 1
+          yield* SwarmState.transition({ taskId: secondTargetId, to, expectedVersion: secondVersion, actor: "act_test", corrId: "cor_single_use_target_2" as any })
+          secondVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_single_use_reviewer" as any })
+          reviewerVersion += 1
+        }
+        const { db } = yield* Database.Service
+        const reviewerSessionId = "ses_single_use_reviewer"
+        const command = "bun test test/kilocode/swarm/state.test.ts"
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, ${reviewerSessionId}, ${"owner_test"}, ${"lease_single_use"}, 0, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        yield* seedHostCommandPart(db, { sessionId: reviewerSessionId, command })
+        const report = {
+          verdict: "pass",
+          summary: "A first independent review verified the target.",
+          checks: [{ criterion: "target tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+          evidence: [{ id: "e1", kind: "test", reference: command, detail: "Persisted test command succeeded.", result: "pass", exitCode: 0 }],
+          blockingFindings: [],
+          uncertainties: [],
+        }
+        const first = yield* SwarmVerification.recordReview({
+          taskId: firstTargetId,
+          reviewerTaskId,
+          reviewerSessionId,
+          reviewerAgent: "reviewer",
+          corrId: "cor_single_use_first" as any,
+          report,
+          executedCommands: [verifiedCommand(command, reviewerSessionId)],
+        })
+        expect(first.accepted).toBe(true)
+        const reused = yield* Effect.exit(SwarmVerification.recordReview({
+          taskId: secondTargetId,
+          reviewerTaskId,
+          reviewerSessionId,
+          reviewerAgent: "reviewer",
+          corrId: "cor_single_use_second" as any,
+          report,
+          executedCommands: [verifiedCommand(command, reviewerSessionId)],
+        }))
+        expect(reused._tag).toBe("Failure")
+        const secondReviewEvents = yield* db.get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event
+          WHERE aggregate_id = ${secondTargetId}
+            AND (type LIKE 'swarm.task.review_passed%' OR type LIKE 'swarm.task.review_blocked%')
+        `)
+        expect(secondReviewEvents?.count).toBe(0)
+      }),
+      file,
+    )
+  })
+
 })
