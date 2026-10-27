@@ -109,6 +109,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           yield* ctx.ask({ permission: "board_post", patterns: ["*"], always: ["*"], metadata: {} })
         }))
         if (permissionResult._tag === "Failure") {
+          if (Cause.hasInterrupts(permissionResult.cause)) return yield* Effect.interrupt
           boardEnabled = false
           boardUnavailableReason = Cause.pretty(permissionResult.cause)
         }
@@ -129,6 +130,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           })
         }))
         if (boardInit._tag === "Failure") {
+          if (Cause.hasInterrupts(boardInit.cause)) return yield* Effect.interrupt
           boardEnabled = false
           boardUnavailableReason = Cause.pretty(boardInit.cause)
         }
@@ -177,17 +179,20 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           corrId: `${base}_review_commit_${reviewEntry.index}`,
           report,
           executedCommands,
-        }).pipe(Effect.catchCause((cause) => Effect.sync(() => {
-          reviewDurablyRecorded = false
-          return {
-            verdict: "inconclusive" as const,
-            accepted: false,
-            summary: "Review could not be durably recorded.",
-            blockingFindings: [Cause.pretty(cause)],
-            evidence: [],
-            checks: [],
-          }
-        })))
+        }).pipe(Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause)) return Effect.interrupt
+          return Effect.sync(() => {
+            reviewDurablyRecorded = false
+            return {
+              verdict: "inconclusive" as const,
+              accepted: false,
+              summary: "Review could not be durably recorded.",
+              blockingFindings: [Cause.pretty(cause)],
+              evidence: [],
+              checks: [],
+            }
+          })
+        }))
 
         // A review task is an execution artifact, not an implementation deliverable.
         // Close it as reviewed only when its event was persisted; failed persistence
@@ -205,6 +210,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
             corrId: `${base}_review_task_${reviewEntry.index}`,
           }))
           if (completion._tag === "Failure") {
+            if (Cause.hasInterrupts(completion.cause)) return yield* Effect.interrupt
             reviewerTaskStateFailure = Cause.pretty(completion.cause)
           } else {
             const committedReviewer = yield* SwarmState.getTask(reviewerTask.id)
@@ -229,6 +235,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
             corrId: `${base}_accept_${reviewEntry.index}`,
           }))
           if (outcome._tag === "Failure") {
+            if (Cause.hasInterrupts(outcome.cause)) return yield* Effect.interrupt
             acceptanceFailure = Cause.pretty(outcome.cause)
           } else {
             const committed = yield* SwarmState.getTask(target.taskId)
@@ -275,7 +282,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           body,
         }).pipe(
           Effect.as(true),
-          Effect.catchCause(() => Effect.succeed(false)),
+          Effect.catchCause((cause) => Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(false)),
         )
         return { taskId: target.taskId, posted }
       }), { concurrency: "unbounded" })
@@ -299,7 +306,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           body,
         }).pipe(
           Effect.as(true),
-          Effect.catchCause(() => Effect.succeed(false)),
+          Effect.catchCause((cause) => Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(false)),
         )
         return { workerTaskId: target.taskId, reviewerTaskId: undefined, posted }
       }), { concurrency: "unbounded" })
@@ -323,7 +330,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
             to: target.sessionId,
             type: "HOLD",
             body,
-          }).pipe(Effect.as(true), Effect.catchCause(() => Effect.succeed(false)))
+          }).pipe(Effect.as(true), Effect.catchCause((cause) => Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(false)))
           return { workerTaskId: target.taskId, posted }
         }),
         { concurrency: "unbounded" },
@@ -348,10 +355,13 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
                 })),
             }))),
             { maxPages: 20, maxMessages: 30, maxBodyChars: 1200 },
-          ).pipe(Effect.catchCause((cause) => Effect.sync(() => {
-            boardHistoryError = Cause.pretty(cause)
-            return { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
-          })))
+          ).pipe(Effect.catchCause((cause) => {
+            if (Cause.hasInterrupts(cause)) return Effect.interrupt
+            return Effect.sync(() => {
+              boardHistoryError = Cause.pretty(cause)
+              return { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
+            })
+          }))
         : { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
       const communications = boardHistory.messages
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
