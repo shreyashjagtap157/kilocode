@@ -237,7 +237,7 @@ export type DefaultTeamPlan = {
   objective: string
   tasks: DefaultTeamTask[]
   execution: { strategy: "sequential"; concurrency: 1; maxWorkers: 4 }
-  verification: { independentReviewsPerTask: 1; requireCommandEvidence: true }
+  verification: { independentReviewsPerTask: 2; requireCommandEvidence: true }
   acceptanceCriteria: string[]
   assumptions: string[]
 }
@@ -307,7 +307,7 @@ export function generateDefaultTeamPlanFromObjective(objective: string): Default
       },
     ],
     execution: { strategy: "sequential", concurrency: 1, maxWorkers: 4 },
-    verification: { independentReviewsPerTask: 1, requireCommandEvidence: true },
+    verification: { independentReviewsPerTask: 2, requireCommandEvidence: true },
     acceptanceCriteria: [
       "The implementation satisfies the stated objective and repository conventions.",
       "Focused automated tests and available static checks are run, with exact outcomes reported.",
