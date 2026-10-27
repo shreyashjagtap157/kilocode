@@ -258,7 +258,7 @@ export namespace SwarmState {
           .pipe(Effect.orDie)
         if (!review || !review.type.startsWith("swarm.task.review_passed")) {
           return yield* Effect.fail(new AcceptanceBlocked({
-            message: `task ${taskId} needs ${requiredReviews} latest passing independent reviews; only ${reviewRows.length + (review ? 1 : 0)} qualifying outcomes are present`,
+            message: `task ${taskId} needs ${requiredReviews} latest passing independent reviews; only ${reviewRows.length} latest passing independent reviews are present`,
           }))
         }
         reviewRows.push(review)
