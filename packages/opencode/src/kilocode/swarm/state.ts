@@ -373,8 +373,8 @@ export namespace SwarmState {
           SELECT id, swarm_id, state, fence FROM kilo_swarm_task WHERE id = ${taskId}
         `).pipe(Effect.orDie)
       const target = yield* db
-        .get<{ id: string; swarm_id: string }>(sql`
-          SELECT id, swarm_id FROM kilo_swarm_task WHERE id = ${row.aggregate_id}
+        .get<{ id: string; swarm_id: string; state: string }>(sql`
+          SELECT id, swarm_id, state FROM kilo_swarm_task WHERE id = ${row.aggregate_id}
         `).pipe(Effect.orDie)
       const binding = yield* db
         .get<{ session_id: string; swarm_id: string; fence: number; state: string }>(sql`
@@ -391,9 +391,37 @@ export namespace SwarmState {
         binding.state !== "bound" ||
         binding.fence !== reviewer.fence ||
         binding.swarm_id !== swarmId ||
-        binding.session_id !== data.reviewerSessionId
+        binding.session_id !== data.reviewerSessionId ||
+        target.state !== "reviewing"
       ) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} no longer has a valid durable reviewer binding` }))
+      }
+
+      if (row.type.startsWith("swarm.task.review_passed")) {
+        if (data.verdict !== "pass") {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} has a mismatched passing verdict` }))
+        }
+        const evidenceProblems = SwarmVerification.qualificationProblems({
+          summary: data.summary,
+          evidenceJson: data.evidenceJson,
+          checksJson: data.checksJson,
+          blockingFindingsJson: data.blockingFindingsJson,
+          uncertaintiesJson: data.uncertaintiesJson,
+          executionEvidenceJson: data.executionEvidenceJson,
+          reviewerSessionId: data.reviewerSessionId,
+        })
+        if (evidenceProblems.length > 0) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} has invalid PASS evidence: ${evidenceProblems[0]}` }))
+        }
+        const hostProblems = yield* SwarmVerification.hostExecutionProblems(db, {
+          executionEvidenceJson: data.executionEvidenceJson,
+          reviewerSessionId: data.reviewerSessionId,
+        }).pipe(Effect.orDie)
+        if (hostProblems.length > 0) {
+          return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} has invalid host execution proof: ${hostProblems[0]}` }))
+        }
+      } else if (data.verdict !== "fail" && data.verdict !== "inconclusive") {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `review task ${taskId} has a mismatched blocked verdict` }))
       }
     })
 
