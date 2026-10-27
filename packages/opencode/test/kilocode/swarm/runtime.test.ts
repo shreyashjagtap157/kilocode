@@ -49,6 +49,7 @@ const use = (
   run?: () => Effect.Effect<void>,
   onCreate?: (input: unknown) => void,
   parentPermission: Session.Info["permission"] = Permission.fromConfig({ bash: "deny" }),
+  onPrompt?: (input: unknown) => void,
 ) => {
   const db = Database.layerFromPath(file)
   const ev = EventV2.layerWith().pipe(Layer.provide(db))
@@ -64,7 +65,10 @@ const use = (
   const prompt = Layer.succeed(SessionPrompt.Service, {
     cancel: () => Effect.void,
     paused: () => Effect.succeed(false),
-    prompt: () => run ? run().pipe(Effect.as(undefined as never)) : Effect.succeed(undefined as never),
+    prompt: (input: unknown) => {
+      onPrompt?.(input)
+      return run ? run().pipe(Effect.as(undefined as never)) : Effect.succeed(undefined as never)
+    },
     loop: () => Effect.succeed(undefined as never),
     shell: () => Effect.succeed(undefined as never),
     command: () => Effect.succeed(undefined as never),
