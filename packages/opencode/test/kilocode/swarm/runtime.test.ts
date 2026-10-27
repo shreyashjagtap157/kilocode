@@ -107,6 +107,38 @@ describe("SwarmRuntime planned worker path (M3)", () => {
     expect(inherited.board_post).toBeUndefined()
   })
 
+  test("disables board tools in the actual child prompt when coordination is unavailable", async () => {
+    await using tmp = await tmpdir()
+    let prompted: any
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ maxWorkers: 1 })
+        const caller = agent("main", Permission.fromConfig({ read: "allow" }), "primary")
+        const subagent = agent("worker", Permission.fromConfig({ read: "allow" }))
+        yield* SwarmRuntime.runPlanned({
+          swarmId,
+          parentSessionId: parentID,
+          description: "review without shared board",
+          prompt: "Inspect the target and report evidence.",
+          caller,
+          subagent,
+          actor: "act_runtime_board_disabled",
+          corrId: "cor_runtime_board_disabled" as any,
+          boardEnabled: false,
+        })
+      }),
+      dbFile(tmp),
+      undefined,
+      undefined,
+      undefined,
+      (input) => { prompted = input },
+    )
+
+    expect(prompted?.tools?.board_read).toBe(false)
+    expect(prompted?.tools?.board_post).toBe(false)
+    expect(prompted?.tools?.question).toBe(false)
+  })
+
   test("creates a child session with the resolved worker model and executes it through durable swarm admission", async () => {
     await using tmp = await tmpdir()
     let created: any
