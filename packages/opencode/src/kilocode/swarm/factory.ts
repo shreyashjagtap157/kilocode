@@ -177,7 +177,7 @@ export function readOnlyPermissions(input: {
       ...allowedShellCommands.flatMap((pattern) =>
         shellOperatorSuffixes.map((operator) => ({
           permission: "bash",
-          pattern: \`\${pattern}\${operator}*\`,
+          pattern: `${pattern}${operator}*`,
           action: "deny" as const,
         })),
       ),
@@ -222,10 +222,110 @@ export type Input = {
   primaryTools?: readonly string[]
 }
 
+
+export type DefaultTeamTask = {
+  id: string
+  role: "architect" | "implementer" | "tester" | "reviewer"
+  title: string
+  prompt: string
+  dependsOn: string[]
+  preferredAgents: string[]
+  readOnly: boolean
+}
+
+export type DefaultTeamPlan = {
+  objective: string
+  tasks: DefaultTeamTask[]
+  execution: { strategy: "sequential"; concurrency: 1; maxWorkers: 4 }
+  verification: { independentReviewsPerTask: 1; requireCommandEvidence: true }
+  acceptanceCriteria: string[]
+  assumptions: string[]
+}
+
+/** Build a deterministic dependency-ordered plan without starting any agents. */
+export function generateDefaultTeamPlanFromObjective(objective: string): DefaultTeamPlan {
+  const normalizedObjective = objective.trim()
+  if (!normalizedObjective) throw new Error("swarm objective must not be empty")
+  return {
+    objective: normalizedObjective,
+    tasks: [
+      {
+        id: "tsk_1",
+        role: "architect",
+        title: "Architecture and acceptance plan",
+        prompt: [
+          "Objective: " + normalizedObjective,
+          "Inspect the repository and produce an actionable implementation plan.",
+          "Identify relevant files, APIs, constraints, security implications, acceptance criteria, and focused validation commands.",
+          "Do not modify files. Post the plan and material risks to the shared board when available, then return a concise evidence-based handoff.",
+        ].join("\n"),
+        dependsOn: [],
+        preferredAgents: ["architect", "general", "explore", "debug"],
+        readOnly: true,
+      },
+      {
+        id: "tsk_2",
+        role: "implementer",
+        title: "Implement the agreed plan",
+        prompt: [
+          "Objective: " + normalizedObjective,
+          "Implement the objective using the architecture handoff and the repository's existing conventions.",
+          "Read prerequisite outputs and shared-board context before editing. Make the smallest coherent change that meets the objective.",
+          "Report exact files changed, design decisions, known risks, and any validation you actually performed. Never claim an unrun test passed.",
+        ].join("\n"),
+        dependsOn: ["tsk_1"],
+        preferredAgents: ["implementer", "developer", "coder", "code", "general", "debug"],
+        readOnly: false,
+      },
+      {
+        id: "tsk_3",
+        role: "tester",
+        title: "Test and validate the implementation",
+        prompt: [
+          "Objective: " + normalizedObjective,
+          "Validate the implementation against the objective and architecture handoff.",
+          "Add or update focused tests where needed, run the narrowest useful test suite and available type/lint checks, and fix test-scope failures where appropriate.",
+          "Record exact commands and outcomes. Clearly separate passed checks, failures, skipped checks, and environment blockers.",
+        ].join("\n"),
+        dependsOn: ["tsk_2"],
+        preferredAgents: ["tester", "test", "qa", "general", "debug", "explore"],
+        readOnly: false,
+      },
+      {
+        id: "tsk_4",
+        role: "reviewer",
+        title: "Final independent review",
+        prompt: [
+          "Objective: " + normalizedObjective,
+          "Review the completed implementation and testing handoff without editing files.",
+          "Check objective coverage, correctness, security/permission boundaries, regressions, test quality, and whether every success claim has evidence.",
+          "Run an appropriate read-only validation command if available and report concrete evidence, blocking findings, and remaining uncertainties.",
+        ].join("\n"),
+        dependsOn: ["tsk_3"],
+        preferredAgents: ["reviewer", "review", "general", "explore", "debug"],
+        readOnly: true,
+      },
+    ],
+    execution: { strategy: "sequential", concurrency: 1, maxWorkers: 4 },
+    verification: { independentReviewsPerTask: 1, requireCommandEvidence: true },
+    acceptanceCriteria: [
+      "The implementation satisfies the stated objective and repository conventions.",
+      "Focused automated tests and available static checks are run, with exact outcomes reported.",
+      "A separate read-only review checks the implementation and does not invent validation evidence.",
+      "No task is treated as accepted solely because an agent reports success; the existing durable evidence gate remains authoritative.",
+    ],
+    assumptions: [
+      "The objective is the source of intent; repository contracts and configured permissions remain authoritative.",
+      "If a prerequisite fails, dependent stages must be reported as blocked rather than executed against missing output.",
+    ],
+  }
+}
+
 export const DynamicAgentFactory = {
   Plan,
   intersect,
   readOnlyPermissions,
+  generateDefaultTeamPlanFromObjective,
   plan(input: Input): Plan {
     KiloTask.validate(input.subagent, input.subagent.name)
     const session = input.session.permission ?? []
