@@ -215,8 +215,10 @@ export namespace SwarmVerification {
     const segments = shellSegments(command)
     if (segments.length === 1) return isKnownValidationInvocation(segments[0]!)
     if (segments.length !== 2) return false
-    const changeDirectory = /^cd\s+(?:"[^"]+"|'[^']+'|[^\s;&|]+)$/i
-    return changeDirectory.test(segments[0]!.trim()) && isKnownValidationInvocation(segments[1]!)
+    // shellSegments intentionally treats &&, ||, and | as separators; inspect
+    // the original command too so only && (not fallback or pipeline) is allowed.
+    const safePrefix = /^cd\s+(?:"[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*([\s\S]+)$/i.exec(command)
+    return safePrefix !== null && isKnownValidationInvocation(segments[1]!)
   }
 
   /**
