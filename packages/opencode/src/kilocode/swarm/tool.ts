@@ -96,26 +96,42 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
       const config = yield* Config.Service
       const flags = yield* RuntimeFlags.Service
       const cfg = yield* config.get()
-      const boardEnabled = BoardEnabled.on(cfg, flags)
+      let boardEnabled = BoardEnabled.on(cfg, flags)
+      let boardUnavailableReason: string | undefined
+      let boardHistoryError: string | undefined
       // Internal BoardStore calls obey the same feature setting and permissions
       // as public board_read / board_post tools; the swarm tool cannot bypass them.
+      // The board is advisory, so declined requests degrade coordination without
+      // discarding the work performed by the swarm.
       if (boardEnabled) {
-        yield* ctx.ask({ permission: "board_read", patterns: ["*"], always: ["*"], metadata: {} })
-        yield* ctx.ask({ permission: "board_post", patterns: ["*"], always: ["*"], metadata: {} })
+        const permissionResult = yield* Effect.exit(Effect.gen(function* () {
+          yield* ctx.ask({ permission: "board_read", patterns: ["*"], always: ["*"], metadata: {} })
+          yield* ctx.ask({ permission: "board_post", patterns: ["*"], always: ["*"], metadata: {} })
+        }))
+        if (permissionResult._tag === "Failure") {
+          boardEnabled = false
+          boardUnavailableReason = Cause.pretty(permissionResult.cause)
+        }
       }
       const resolved = yield* Effect.forEach(args.workers, (worker) => Agent.get(worker.agent), { concurrency: "unbounded" })
       for (const [index, subagent] of resolved.entries()) DynamicAgentFactory.plan({ parentID: parent.id, description: args.workers[index]?.role ?? subagent.name, caller, subagent, session: parent })
       const base = ctx.callID ? `cor_swarm_${ctx.callID}` : `cor_swarm_${Date.now()}`
       if (boardEnabled) {
-        yield* BoardStore.scope(parent.id as SessionID)
-        yield* BoardStore.post({
-          sessionID: parent.id as SessionID,
-          messageID: `${base}_objective`,
-          callID: base,
-          to: "ALL",
-          type: "INFO",
-          body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.`,
-        })
+        const boardInit = yield* Effect.exit(Effect.gen(function* () {
+          yield* BoardStore.scope(parent.id as SessionID)
+          yield* BoardStore.post({
+            sessionID: parent.id as SessionID,
+            messageID: `${base}_objective`,
+            callID: base,
+            to: "ALL",
+            type: "INFO",
+            body: `SWARM OBJECTIVE: ${args.objective}\nWorkers: ${args.workers.map((worker) => `${worker.role} (${worker.agent})`).join(", ")}\nTeam protocol: read shared board context before acting; post discoveries, blockers, questions, and verified findings for peers; challenge contradictions with evidence; do not claim acceptance without independent review.`,
+          })
+        }))
+        if (boardInit._tag === "Failure") {
+          boardEnabled = false
+          boardUnavailableReason = Cause.pretty(boardInit.cause)
+        }
       }
       const swarmId = yield* SwarmState.createSwarm({ maxWorkers: args.maxWorkers ?? args.workers.length })
       const planned = args.workers.map((worker, index) => ({
@@ -330,7 +346,10 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
                 })),
             }))),
             { maxPages: 20, maxMessages: 30, maxBodyChars: 1200 },
-          )
+          ).pipe(Effect.catchCause((cause) => Effect.sync(() => {
+            boardHistoryError = Cause.pretty(cause)
+            return { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
+          })))
         : { scanned: 0, truncated: false, messages: [] as SwarmCommunications.Message[] }
       const communications = boardHistory.messages
       const failures = batch.failed.map((entry) => ({ role: args.workers[entry.index]?.role ?? "worker", error: errorText(entry.error) }))
@@ -349,6 +368,8 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
         title: `Swarm completed ${entries.length}/${args.workers.length} workers; ${accepted}/${entries.length} independently verified`,
         output: [
           `Swarm objective: ${args.objective}`, `Workers completed: ${entries.length}/${args.workers.length}`, `Independent peer reviews: ${reviews.length}/${entries.length}`, `Reviewer failures: ${reviewerFailures.length}`, `Reviewer lifecycle failures: ${reviewerStateFailures.length}`, `Peer-review board notices posted: ${reviewAnnouncements.filter((item) => item.posted).length + reviewerFailureAnnouncements.filter((item) => item.posted).length + unavailablePeerAnnouncements.filter((item) => item.posted).length}/${reviewAnnouncements.length + reviewerFailureAnnouncements.length + unavailablePeerAnnouncements.length}`, ...(entries.length < 2 ? ["Independent review unavailable: fewer than two workers completed successfully."] : []), `Workers accepted after evidence gate: ${accepted}/${entries.length}`, `Team communications: ${communications.length}${boardHistory.truncated ? ` (latest messages shown; ${boardHistory.scanned} observed)` : ""}`,
+          ...(boardUnavailableReason ? [`Shared-board coordination unavailable: ${boardUnavailableReason.slice(0, 500)}`] : []),
+          ...(boardHistoryError ? [`Shared-board history read failed: ${boardHistoryError.slice(0, 500)}`] : []),
           ...entries.flatMap((entry, index) => {
             const review = reviews.find((item) => item.workerTaskId === entry.taskId)
             const details = review as (typeof review & {
@@ -398,7 +419,7 @@ export const SwarmTool: Tool.Info<typeof Parameters> = {
           ...reviewerFailures.flatMap((entry) => [`\n## REVIEW FAILED: ${entry.role} (target: ${entry.targetRole})`, entry.error]),
           ...reviewerStateFailures.flatMap((entry) => [`\n## REVIEW TASK LIFECYCLE FAILED: ${entry.reviewerTaskId} (target: ${entry.workerTaskId})`, String(entry.error)]),
         ].join("\n"),
-        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, reviewerFailureAnnouncements, unavailablePeerAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications, communicationMessagesScanned: boardHistory.scanned, communicationsTruncated: boardHistory.truncated },
+        metadata: { swarmId, workerCount: entries.length, failedWorkerCount: failures.length, reviewerFailureCount: reviewerFailures.length, reviewerStateFailureCount: reviewerStateFailures.length, independentlyVerifiedCount: accepted, reviewAnnouncements, reviewerFailureAnnouncements, unavailablePeerAnnouncements, workers: entries, reviews, failures, reviewerFailures, reviewerStateFailures, communications, communicationMessagesScanned: boardHistory.scanned, communicationsTruncated: boardHistory.truncated, boardUnavailableReason, boardHistoryError },
       }
     }),
   }),
