@@ -17,6 +17,7 @@ import contextEpochAgentMigration from "@opencode-ai/core/database/migration/202
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
 import swarmAtomicAdmissionMigration from "@opencode-ai/core/database/migration/20261024210000_kilocode_swarm_atomic_admission"
+import swarmRequiredReviewsMigration from "@opencode-ai/core/database/migration/202610270001_swarm_required_reviews"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -153,6 +154,35 @@ describe("DatabaseMigration", () => {
         yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_queued_1', 'swm_legacy', 'queued', 1, 1)`)
         yield* db.run(sql`INSERT INTO kilo_swarm_task (id, swarm_id, state, time_created, time_updated) VALUES ('tsk_queued_2', 'swm_legacy', 'queued', 1, 1)`)
         expect(yield* db.get(sql`SELECT COUNT(*) AS count FROM kilo_swarm_task WHERE swarm_id = 'swm_legacy' AND state = 'queued'`)).toEqual({ count: 2 })
+      }),
+    )
+  })
+
+
+  test("adds the default independent review threshold to existing swarms", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`
+          CREATE TABLE kilo_swarm (
+            id text PRIMARY KEY,
+            state text NOT NULL,
+            version integer DEFAULT 0 NOT NULL,
+            max_workers integer DEFAULT 4 NOT NULL,
+            time_created integer NOT NULL,
+            time_updated integer NOT NULL
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm (id, state, version, max_workers, time_created, time_updated)
+          VALUES ('swm_existing', 'active', 0, 4, 1, 1)
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, [swarmRequiredReviewsMigration])
+
+        expect(yield* db.get(sql`SELECT required_reviews FROM kilo_swarm WHERE id = 'swm_existing'`)).toEqual({
+          required_reviews: 1,
+        })
       }),
     )
   })
