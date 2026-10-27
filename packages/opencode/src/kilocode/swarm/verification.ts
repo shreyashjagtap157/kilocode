@@ -457,7 +457,18 @@ export namespace SwarmVerification {
         { commit },
       )
     }
-    return { verdict, accepted: verdict === "pass", summary: decoded.report.summary, blockingFindings: blocking, evidence: decoded.report.evidence, checks: decoded.report.checks }
+    return {
+      verdict,
+      accepted: verdict === "pass",
+      summary: decoded.report.summary,
+      blockingFindings: blocking,
+      evidence: decoded.report.evidence,
+      checks: decoded.report.checks,
+      // Only call records that match persisted SessionV1 tool parts survive as
+      // verified evidence. Keep rejected candidates separate for honest reporting.
+      executionEvidence: failures.filter((problem) => executionProblems.includes(problem)).length === 0 ? executions : [],
+      executionEvidenceProblems: executionProblems,
+    }
   })
 
 
