@@ -166,6 +166,8 @@ describe("DynamicAgentFactory", () => {
     expect(Permission.evaluate("bash", "git show -o /tmp/review.txt HEAD", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "git log --output=/tmp/review.log", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "git grep --open-files-in-pager='touch /tmp/x' needle", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts < input.sh", original, policy).action).toBe("deny")
+    expect(Permission.evaluate("bash", "bun test test/example.test.ts & echo done", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "bun test test/example.test.ts > test.log", original, policy).action).toBe("deny")
     expect(Permission.evaluate("bash", "bun test test/example.test.ts && rm -rf src", original, policy).action).toBe("deny")
   })
