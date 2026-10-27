@@ -1374,4 +1374,84 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("acceptance gate refuses a passing review until the reviewer task is terminally reviewed", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm()
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_review_lifecycle_worker" as any })
+        const reviewerTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_review_lifecycle_reviewer" as any })
+        let workerVersion = 0
+        let reviewerVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: workerVersion, actor: "act_test", corrId: "cor_review_lifecycle_worker" as any })
+          workerVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTaskId, to, expectedVersion: reviewerVersion, actor: "act_test", corrId: "cor_review_lifecycle_reviewer" as any })
+          reviewerVersion += 1
+        }
+        const sessionId = "ses_review_lifecycle"
+        const command = "bun test test/kilocode/swarm/state.test.ts"
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO kilo_swarm_worker_binding
+            (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+          VALUES (${reviewerTaskId}, ${swarmId}, ${sessionId}, ${"owner_test"}, ${"lease_test"}, 0, 'bound', ${Date.now()}, ${Date.now()})
+        `).pipe(Effect.orDie)
+        yield* seedHostCommandPart(db, { sessionId, command })
+        const review = yield* SwarmVerification.recordReview({
+          taskId,
+          reviewerTaskId,
+          reviewerSessionId: sessionId,
+          reviewerAgent: "reviewer",
+          corrId: "cor_review_lifecycle_record" as any,
+          report: {
+            verdict: "pass",
+            summary: "The independent review has valid host-recorded test evidence.",
+            checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+            evidence: [{ id: "e1", kind: "test", reference: command, detail: "The recorded test command exited with code 0.", result: "pass", exitCode: 0 }],
+            blockingFindings: [],
+            uncertainties: [],
+          },
+          executedCommands: [verifiedCommand(command, sessionId)],
+        })
+        expect(review.accepted).toBe(true)
+
+        const beforeClosure = yield* Effect.exit(SwarmState.transition({
+          taskId,
+          to: "accepted",
+          expectedVersion: workerVersion,
+          actor: "act_test",
+          corrId: "cor_review_lifecycle_early_accept" as any,
+        }))
+        expect(beforeClosure._tag).toBe("Failure")
+        const workerBeforeClosure = yield* SwarmState.getTask(taskId)
+        expect(workerBeforeClosure.state).toBe("reviewing")
+        expect(workerBeforeClosure.version).toBe(workerVersion)
+
+        yield* SwarmState.transition({
+          taskId: reviewerTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerVersion,
+          actor: "act_test",
+          corrId: "cor_review_lifecycle_close" as any,
+        })
+        const reviewer = yield* SwarmState.getTask(reviewerTaskId)
+        expect(reviewer.state).toBe("reviewed")
+
+        const accepted = yield* SwarmState.transition({
+          taskId,
+          to: "accepted",
+          expectedVersion: workerVersion,
+          actor: "act_test",
+          corrId: "cor_review_lifecycle_accept" as any,
+        })
+        expect(accepted.version).toBe(workerVersion + 1)
+        expect((yield* SwarmState.getTask(taskId)).state).toBe("accepted")
+      }),
+      file,
+    )
+  })
+
 })
