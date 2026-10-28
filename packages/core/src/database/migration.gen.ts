@@ -46,5 +46,6 @@ export const migrations = (
     import("./migration/20261018105650_kilocode_swarm"),
     import("./migration/20261024210000_kilocode_swarm_atomic_admission"),
     import("./migration/202610260001_swarm_worker_binding"),
+    import("./migration/202610270001_swarm_required_reviews"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

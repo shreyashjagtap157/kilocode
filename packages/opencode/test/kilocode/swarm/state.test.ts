@@ -808,6 +808,107 @@ describe("swarm state (M2)", () => {
     )
   })
 
+
+  test("a swarm configured for two independent reviews cannot accept after only one passing review", async () => {
+    await using tmp = await tmpdir()
+    const file = dbFile(tmp)
+    const command = "bun test test/kilocode/swarm/state.test.ts"
+    await use(
+      Effect.gen(function* () {
+        const swarmId = yield* SwarmState.createSwarm({ requiredReviews: 2 })
+        const taskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_two_reviews_target" as any })
+        const reviewerOneTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_two_reviews_reviewer_one" as any })
+        const reviewerTwoTaskId = yield* SwarmState.createTask({ swarmId, actor: "act_test", corrId: "cor_two_reviews_reviewer_two" as any })
+        let targetVersion = 0
+        let reviewerOneVersion = 0
+        let reviewerTwoVersion = 0
+        for (const to of ["reserved", "dispatched", "running", "reviewing"]) {
+          yield* SwarmState.transition({ taskId, to, expectedVersion: targetVersion, actor: "act_test", corrId: "cor_two_reviews_target" as any })
+          targetVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerOneTaskId, to, expectedVersion: reviewerOneVersion, actor: "act_test", corrId: "cor_two_reviews_reviewer_one" as any })
+          reviewerOneVersion += 1
+          yield* SwarmState.transition({ taskId: reviewerTwoTaskId, to, expectedVersion: reviewerTwoVersion, actor: "act_test", corrId: "cor_two_reviews_reviewer_two" as any })
+          reviewerTwoVersion += 1
+        }
+        const { db } = yield* Database.Service
+        const reviewerOneSession = "ses_two_reviews_one"
+        const reviewerTwoSession = "ses_two_reviews_two"
+        for (const binding of [
+          { taskId: reviewerOneTaskId, sessionId: reviewerOneSession, leaseId: "lease_two_reviews_one" },
+          { taskId: reviewerTwoTaskId, sessionId: reviewerTwoSession, leaseId: "lease_two_reviews_two" },
+        ]) {
+          yield* db.run(sql`
+            INSERT INTO kilo_swarm_worker_binding
+              (task_id, swarm_id, session_id, owner_id, lease_id, fence, state, time_created, time_updated)
+            VALUES (${binding.taskId}, ${swarmId}, ${binding.sessionId}, ${"owner_test"}, ${binding.leaseId}, 0, 'bound', ${Date.now()}, ${Date.now()})
+          `).pipe(Effect.orDie)
+          yield* seedHostCommandPart(db, { sessionId: binding.sessionId, command })
+        }
+
+        const recordPassingReview = (reviewerTaskId: string, reviewerSessionId: string, corrId: string) =>
+          SwarmVerification.recordReview({
+            taskId,
+            reviewerTaskId,
+            reviewerSessionId,
+            reviewerAgent: "independent-reviewer",
+            corrId: corrId as any,
+            executedCommands: [verifiedCommand(command, reviewerSessionId)],
+            report: {
+              verdict: "pass",
+              summary: "The reviewer independently verified the required validation.",
+              checks: [{ criterion: "targeted tests pass", verdict: "pass", evidenceIds: ["e1"] }],
+              evidence: [{
+                id: "e1", kind: "test", reference: command,
+                detail: "The recorded validation command exited successfully.",
+                result: "pass", exitCode: 0,
+              }],
+              blockingFindings: [],
+              uncertainties: [],
+            },
+          })
+
+        const firstReview = yield* recordPassingReview(reviewerOneTaskId, reviewerOneSession, "cor_two_reviews_record_one")
+        expect(firstReview.accepted).toBe(true)
+        yield* SwarmState.transition({
+          taskId: reviewerOneTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerOneVersion,
+          actor: "act_test",
+          corrId: "cor_two_reviews_close_one" as any,
+        })
+        const prematureAcceptance = yield* Effect.exit(SwarmState.transition({
+          taskId,
+          to: "accepted",
+          expectedVersion: targetVersion,
+          actor: "act_test",
+          corrId: "cor_two_reviews_premature_accept" as any,
+        }))
+        expect(prematureAcceptance._tag).toBe("Failure")
+        expect((yield* SwarmState.getTask(taskId)).state).toBe("reviewing")
+
+        const secondReview = yield* recordPassingReview(reviewerTwoTaskId, reviewerTwoSession, "cor_two_reviews_record_two")
+        expect(secondReview.accepted).toBe(true)
+        yield* SwarmState.transition({
+          taskId: reviewerTwoTaskId,
+          to: "reviewed",
+          expectedVersion: reviewerTwoVersion,
+          actor: "act_test",
+          corrId: "cor_two_reviews_close_two" as any,
+        })
+        const accepted = yield* SwarmState.transition({
+          taskId,
+          to: "accepted",
+          expectedVersion: targetVersion,
+          actor: "act_test",
+          corrId: "cor_two_reviews_accept" as any,
+        })
+        expect(accepted.version).toBe(targetVersion + 1)
+        expect((yield* SwarmState.getTask(taskId)).state).toBe("accepted")
+      }),
+      file,
+    )
+  })
+
   test("acceptance gate rechecks independent review inside the durable transition transaction", async () => {
     await using tmp = await tmpdir()
     const file = dbFile(tmp)

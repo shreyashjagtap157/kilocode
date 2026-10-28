@@ -12,6 +12,7 @@ export const SwarmTable = sqliteTable("kilo_swarm", {
   state: text().notNull(),
   version: integer().notNull().default(0),
   max_workers: integer().notNull().default(4),
+  required_reviews: integer().notNull().default(1),
   time_created: integer().notNull(),
   time_updated: integer().notNull(),
 })
