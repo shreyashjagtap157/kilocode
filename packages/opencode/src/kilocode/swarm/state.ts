@@ -217,7 +217,7 @@ export namespace SwarmState {
   // Authoritative qualification gate. Keep this check in the state/CAS boundary,
   // not just in the swarm tool, so every caller must satisfy the same invariant.
   // This is also rechecked inside EventV2's commit hook to close the preflight race.
-  const assertAcceptance = (db: DB, taskId: string, swarmId: string) =>
+  const assertAcceptance = (db: DB, taskId: string, swarmId: string, requiredReviewCount: number) =>
     Effect.gen(function* () {
       // A task cannot be accepted while any direct child remains unqualified.
       const child = yield* db
@@ -229,6 +229,18 @@ export namespace SwarmState {
         .pipe(Effect.orDie)
       if (child) {
         return yield* Effect.fail(new AcceptanceBlocked({ message: `child task ${child.id} is not accepted/integrated (${child.state})` }))
+      }
+
+      // Count all passing reviews for this task.
+      const passingReviewCount = yield* db
+        .get<{ count: number }>(sql`
+          SELECT COUNT(*) AS count FROM event
+          WHERE aggregate_id = ${taskId}
+            AND type LIKE 'swarm.task.review_passed%'
+        `)
+        .pipe(Effect.orDie)
+      if (!passingReviewCount || passingReviewCount.count < requiredReviewCount) {
+        return yield* Effect.fail(new AcceptanceBlocked({ message: `task ${taskId} has insufficient passing reviews: ${passingReviewCount?.count ?? 0} of required ${requiredReviewCount}` }))
       }
 
       // The latest review outcome is authoritative. A stale earlier PASS must not
@@ -468,7 +480,7 @@ export namespace SwarmState {
     if (task.cancel_requested !== 0 && input.to !== "cancelled") {
       return yield* Effect.fail(new CancelConflict({ message: `task ${input.taskId} has a cancellation request and may only transition to cancelled` }))
     }
-    if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id)
+    if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id, 2)
     if (input.to === "reviewed") yield* assertReviewCompletion(db, input.taskId, task.swarm_id)
 
     const now = Date.now()
@@ -517,7 +529,7 @@ export namespace SwarmState {
               if (!currentAllowed || !currentAllowed.includes(input.to)) {
                 return yield* Effect.die(new IllegalTransition({ message: `illegal transition ${current.state} -> ${input.to}` }))
               }
-              if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id).pipe(Effect.orDie)
+              if (input.to === "accepted") yield* assertAcceptance(db, input.taskId, task.swarm_id, 2).pipe(Effect.orDie)
               if (input.to === "reviewed") yield* assertReviewCompletion(db, input.taskId, task.swarm_id).pipe(Effect.orDie)
               const updated = yield* db.get<{ id: string }>(sql`
                 UPDATE kilo_swarm_task
